@@ -93,6 +93,9 @@ pub struct ExtraTreesRegressorParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Seed used for bootstrap sampling and feature selection for each tree.
     pub seed: u64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Optional sample weights.
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// Extra Trees Regressor
@@ -156,6 +159,7 @@ impl Default for ExtraTreesRegressorParameters {
             m: Option::None,
             keep_samples: false,
             seed: 0,
+            sample_weights: Option::None,
         }
     }
 }
@@ -203,6 +207,7 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
             seed: parameters.seed,
             bootstrap: false,
             splitter: Splitter::Random,
+            sample_weights: parameters.sample_weights,
         };
         let forest_regressor = BaseForestRegressor::fit(x, y, regressor_params)?;
 

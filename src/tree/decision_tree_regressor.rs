@@ -87,6 +87,9 @@ pub struct DecisionTreeRegressorParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Controls the randomness of the estimator
     pub seed: Option<u64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Optional sample weights
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// Regression Tree
@@ -113,6 +116,12 @@ impl DecisionTreeRegressorParameters {
         self.min_samples_split = min_samples_split;
         self
     }
+
+    /// Sample weights used during fit.
+    pub fn with_sample_weights(mut self, sample_weights: Vec<f64>) -> Self {
+        self.sample_weights = Some(sample_weights);
+        self
+    }
 }
 
 impl Default for DecisionTreeRegressorParameters {
@@ -122,6 +131,7 @@ impl Default for DecisionTreeRegressorParameters {
             min_samples_leaf: 1,
             min_samples_split: 2,
             seed: Option::None,
+            sample_weights: Option::None,
         }
     }
 }
@@ -143,6 +153,9 @@ pub struct DecisionTreeRegressorSearchParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Controls the randomness of the estimator
     pub seed: Vec<Option<u64>>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Optional sample weights.
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// DecisionTreeRegressor grid search iterator
@@ -203,6 +216,10 @@ impl Iterator for DecisionTreeRegressorSearchParametersIterator {
                 .decision_tree_regressor_search_parameters
                 .min_samples_split[self.current_min_samples_split],
             seed: self.decision_tree_regressor_search_parameters.seed[self.current_seed],
+            sample_weights: self
+                .decision_tree_regressor_search_parameters
+                .sample_weights
+                .clone(),
         };
 
         if self.current_max_depth + 1
@@ -255,6 +272,7 @@ impl Default for DecisionTreeRegressorSearchParameters {
             min_samples_leaf: vec![default_params.min_samples_leaf],
             min_samples_split: vec![default_params.min_samples_split],
             seed: vec![default_params.seed],
+            sample_weights: default_params.sample_weights,
         }
     }
 }
@@ -307,6 +325,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             min_samples_split: parameters.min_samples_split,
             seed: parameters.seed,
             splitter: Splitter::Best,
+            sample_weights: parameters.sample_weights,
         };
         let tree = BaseTreeRegressor::fit(x, y, tree_parameters)?;
         Ok(Self {
@@ -399,6 +418,7 @@ mod tests {
                 min_samples_leaf: 2,
                 min_samples_split: 6,
                 seed: Option::None,
+                sample_weights: Option::None,
             },
         )
         .and_then(|t| t.predict(&x))
@@ -420,6 +440,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 3,
                 seed: Option::None,
+                sample_weights: Option::None,
             },
         )
         .and_then(|t| t.predict(&x))

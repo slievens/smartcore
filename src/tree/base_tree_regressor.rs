@@ -42,6 +42,9 @@ pub struct BaseTreeRegressorParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Determines the strategy used to choose the split at each node.
     pub splitter: Splitter,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Optional sample weights
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// Regression base_tree
@@ -135,6 +138,7 @@ struct NodeVisitor<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Ar
     y: &'a Y,
     node: usize,
     samples: Vec<usize>,
+    sample_weights: &'a Vec<f64>,
     order: &'a [Vec<usize>],
     true_child_output: f64,
     false_child_output: f64,
@@ -149,6 +153,7 @@ impl<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
     fn new(
         node_id: usize,
         samples: Vec<usize>,
+        sample_weights: &'a Vec<f64>,
         order: &'a [Vec<usize>],
         x: &'a X,
         y: &'a Y,
@@ -159,6 +164,7 @@ impl<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             y,
             node: node_id,
             samples,
+            sample_weights,
             order,
             true_child_output: 0f64,
             false_child_output: 0f64,
@@ -190,6 +196,13 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
                 "Training data must contain at least one sample and one feature.",
             ));
         }
+        if let Some(sample_weights) = &parameters.sample_weights
+            && sample_weights.len() != x_nrows
+        {
+            return Err(Failed::fit(
+                "Number of sample weights should equal size of x",
+            ));
+        }
 
         let samples = vec![1; x_nrows];
         BaseTreeRegressor::fit_weak_learner(x, y, samples, num_attributes, parameters)
@@ -210,14 +223,25 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut nodes: Vec<Node> = Vec::new();
         let mut rng = get_rng_impl(parameters.seed);
 
-        let mut n = 0;
+        // Note: this will clone sample_weights, which is sad
+        let sample_weights: Vec<f64> = parameters
+            .sample_weights
+            .clone()
+            .unwrap_or_else(|| vec![1.0; y_ncols]);
+
         let mut sum = 0f64;
-        for (i, sample_i) in samples.iter().enumerate().take(y_ncols) {
-            n += *sample_i;
-            sum += *sample_i as f64 * y_m.get(i).to_f64().unwrap();
+        let mut mass = 0f64;
+        for (i, (sample_i, weight_i)) in samples
+            .iter()
+            .zip(sample_weights.iter())
+            .enumerate()
+            .take(y_ncols)
+        {
+            mass += *sample_i as f64 * weight_i;
+            sum += *sample_i as f64 * weight_i * y_m.get(i).to_f64().unwrap();
         }
 
-        let root = Node::new(sum / (n as f64));
+        let root = Node::new(sum / mass);
         nodes.push(root);
         let mut order: Vec<Vec<usize>> = Vec::new();
 
@@ -236,7 +260,8 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             _phantom_y: PhantomData,
         };
 
-        let mut visitor = NodeVisitor::<TX, TY, X, Y>::new(0, samples, &order, x, &y_m, 1);
+        let mut visitor =
+            NodeVisitor::<TX, TY, X, Y>::new(0, samples, &sample_weights, &order, x, &y_m, 1);
 
         let mut visitor_queue: LinkedList<NodeVisitor<'_, TX, TY, X, Y>> = LinkedList::new();
 
@@ -300,7 +325,13 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             return false;
         }
 
-        let sum = self.nodes()[visitor.node].output * n as f64;
+        let mass: f64 = visitor
+            .samples
+            .iter()
+            .zip(visitor.sample_weights.iter())
+            .map(|(&s, &w)| s as f64 * w)
+            .sum();
+        let sum = self.nodes()[visitor.node].output * mass;
 
         let mut variables = (0..n_attr).collect::<Vec<_>>();
 
@@ -309,17 +340,17 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         }
 
         let parent_gain =
-            n as f64 * self.nodes()[visitor.node].output * self.nodes()[visitor.node].output;
+            mass * self.nodes()[visitor.node].output * self.nodes()[visitor.node].output;
 
         let splitter = self.parameters().splitter.clone();
 
         for variable in variables.iter().take(mtry) {
             match splitter {
                 Splitter::Random => {
-                    self.find_random_split(visitor, n, sum, parent_gain, *variable, rng);
+                    self.find_random_split(visitor, n, mass, sum, parent_gain, *variable, rng);
                 }
                 Splitter::Best => {
-                    self.find_best_split(visitor, n, sum, parent_gain, *variable);
+                    self.find_best_split(visitor, n, mass, sum, parent_gain, *variable);
                 }
             }
         }
@@ -331,6 +362,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         &mut self,
         visitor: &mut NodeVisitor<'_, TX, TY, X, Y>,
         n: usize,
+        mass: f64,
         sum: f64,
         parent_gain: f64,
         j: usize,
@@ -364,12 +396,16 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let split_value = rng.random_range(min_val.to_f64().unwrap()..max_val.to_f64().unwrap());
 
         let mut true_sum = 0f64;
+        let mut true_mass = 0f64;
         let mut true_count = 0;
         for &i in &visitor.order[j] {
             if visitor.samples[i] > 0 {
                 if visitor.x.get((i, j)).to_f64().unwrap() <= split_value {
-                    true_sum += visitor.samples[i] as f64 * visitor.y.get(i).to_f64().unwrap();
+                    true_sum += visitor.samples[i] as f64
+                        * visitor.sample_weights[i]
+                        * visitor.y.get(i).to_f64().unwrap();
                     true_count += visitor.samples[i];
+                    true_mass += visitor.samples[i] as f64 * visitor.sample_weights[i];
                 } else {
                     break;
                 }
@@ -384,18 +420,18 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             return;
         }
 
-        let true_mean = if true_count > 0 {
-            true_sum / true_count as f64
+        let true_mean = if true_mass > 0f64 {
+            true_sum / true_mass
         } else {
             0.0
         };
-        let false_mean = if false_count > 0 {
-            (sum - true_sum) / false_count as f64
+        let false_mass = mass - true_mass;
+        let false_mean = if false_mass > 0f64 {
+            (sum - true_sum) / false_mass
         } else {
             0.0
         };
-        let gain = (true_count as f64 * true_mean * true_mean
-            + false_count as f64 * false_mean * false_mean)
+        let gain = (true_mass * true_mean * true_mean + false_mass * false_mean * false_mean)
             - parent_gain;
 
         if self.nodes[visitor.node].split_score.is_none()
@@ -413,12 +449,14 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         &mut self,
         visitor: &mut NodeVisitor<'_, TX, TY, X, Y>,
         n: usize,
+        mass: f64,
         sum: f64,
         parent_gain: f64,
         j: usize,
     ) {
         let mut true_sum = 0f64;
         let mut true_count = 0;
+        let mut true_mass = 0f64;
         let mut prevx = Option::None;
 
         for i in visitor.order[j].iter() {
@@ -428,7 +466,10 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
                 if prevx.is_none() || x_ij == prevx.unwrap() {
                     prevx = Some(x_ij);
                     true_count += visitor.samples[*i];
-                    true_sum += visitor.samples[*i] as f64 * visitor.y.get(*i).to_f64().unwrap();
+                    true_mass += visitor.samples[*i] as f64 * visitor.sample_weights[*i];
+                    true_sum += visitor.samples[*i] as f64
+                        * visitor.sample_weights[*i]
+                        * visitor.y.get(*i).to_f64().unwrap();
                     continue;
                 }
 
@@ -439,15 +480,19 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
                 {
                     prevx = Some(x_ij);
                     true_count += visitor.samples[*i];
-                    true_sum += visitor.samples[*i] as f64 * visitor.y.get(*i).to_f64().unwrap();
+                    true_mass += visitor.samples[*i] as f64 * visitor.sample_weights[*i];
+                    true_sum += visitor.samples[*i] as f64
+                        * visitor.sample_weights[*i]
+                        * visitor.y.get(*i).to_f64().unwrap();
                     continue;
                 }
 
-                let true_mean = true_sum / true_count as f64;
-                let false_mean = (sum - true_sum) / false_count as f64;
+                let true_mean = true_sum / true_mass;
+                let false_mass = mass - true_mass;
+                let false_mean = (sum - true_sum) / false_mass;
 
-                let gain = (true_count as f64 * true_mean * true_mean
-                    + false_count as f64 * false_mean * false_mean)
+                let gain = (true_mass * true_mean * true_mean
+                    + false_mass * false_mean * false_mean)
                     - parent_gain;
 
                 if self.nodes()[visitor.node].split_score.is_none()
@@ -463,8 +508,11 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
                 }
 
                 prevx = Some(x_ij);
-                true_sum += visitor.samples[*i] as f64 * visitor.y.get(*i).to_f64().unwrap();
+                true_sum += visitor.samples[*i] as f64
+                    * visitor.sample_weights[*i]
+                    * visitor.y.get(*i).to_f64().unwrap();
                 true_count += visitor.samples[*i];
+                true_mass += visitor.samples[*i] as f64 * visitor.sample_weights[*i];
             }
         }
     }
@@ -521,6 +569,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut true_visitor = NodeVisitor::<TX, TY, X, Y>::new(
             true_child_idx,
             true_samples,
+            visitor.sample_weights,
             visitor.order,
             visitor.x,
             visitor.y,
@@ -534,6 +583,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut false_visitor = NodeVisitor::<TX, TY, X, Y>::new(
             false_child_idx,
             visitor.samples,
+            visitor.sample_weights,
             visitor.order,
             visitor.x,
             visitor.y,
@@ -553,6 +603,7 @@ mod tests {
     use super::*;
     use crate::linalg::basic::arrays::Array;
     use crate::linalg::basic::matrix::DenseMatrix;
+    use crate::metrics::mean_absolute_error;
 
     #[test]
     fn test_fit_on_empty_data_returns_error() {
@@ -571,6 +622,7 @@ mod tests {
                 min_samples_split: 2,
                 seed: None,
                 splitter: Splitter::Best,
+                sample_weights: None,
             },
         );
         assert!(result.is_err());
@@ -594,9 +646,127 @@ mod tests {
                 min_samples_split: 2,
                 seed: None,
                 splitter: Splitter::Best,
+                sample_weights: None,
             },
         );
         assert!(result.is_err());
         assert_eq!(result.err().unwrap().error(), FailedError::ParametersError);
+    }
+
+    #[test]
+    fn root_prediction_is_weighted_mean() {
+        // Create a tree with no splits. Assert that the prediction is the weighted mean of the targets.
+
+        // X-values are arbitrary. 3 examples
+        let x = DenseMatrix::from_2d_vec(&vec![vec![1.0_f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]])
+            .unwrap();
+        let y = vec![1.0, 2.0, 3.0];
+        let sample_weights = vec![5.0, 6.0, 7.0];
+
+        let result = BaseTreeRegressor::fit(
+            &x,
+            &y,
+            BaseTreeRegressorParameters {
+                max_depth: Some(0),
+                min_samples_leaf: 1,
+                min_samples_split: 2,
+                seed: None,
+                splitter: Splitter::Best,
+                sample_weights: Some(sample_weights.clone()),
+            },
+        );
+        assert!(result.is_ok());
+        let tree = result.unwrap();
+        let expected = y
+            .iter()
+            .zip(sample_weights.iter())
+            .map(|(yi, wi)| yi * wi)
+            .sum::<f64>()
+            / sample_weights.iter().sum::<f64>();
+
+        assert!((tree.predict_for_row(&x, 0) - expected).abs() < 1e-9);
+    }
+
+    #[test]
+    fn uniform_weights_match_unweighted() {
+        // Test that using no weights is equivalent to using uniform weights
+        let x_rand: DenseMatrix<f64> = DenseMatrix::<f64>::rand(17, 5);
+        let y_rand: Vec<f64> = (0..17).collect::<Vec<_>>().map(|y| *y as f64);
+        let parameters = BaseTreeRegressorParameters {
+            max_depth: Some(5),
+            min_samples_leaf: 1,
+            min_samples_split: 1,
+            seed: Some(42),
+            splitter: Splitter::Best,
+            sample_weights: None,
+        };
+        let uniform_parameters = BaseTreeRegressorParameters {
+            max_depth: Some(5),
+            min_samples_leaf: 1,
+            min_samples_split: 1,
+            seed: Some(42),
+            splitter: Splitter::Best,
+            sample_weights: Some(vec![1.0f64; 17]),
+        };
+        let tree_no_weights =
+            BaseTreeRegressor::fit(&x_rand, &y_rand, parameters).expect("Fit should work");
+        let tree_with_weights =
+            BaseTreeRegressor::fit(&x_rand, &y_rand, uniform_parameters).expect("Fit should work");
+
+        let y_pred_no_weights = tree_no_weights
+            .predict(&x_rand)
+            .expect("Predict should work");
+        let y_pred_with_weights = tree_with_weights
+            .predict(&x_rand)
+            .expect("Predict should work");
+        assert!(mean_absolute_error(&y_pred_no_weights, &y_pred_with_weights) < 1e-9);
+    }
+
+    #[test]
+    fn integer_weights_equivalent_to_repeating_sample() {
+        // Test that setting weight to "2" (or "3") is equivalent to having the same sample twice (or trice)
+        let x = DenseMatrix::from_2d_vec(&vec![vec![1.0_f64, 2.0], vec![3.0, 4.0], vec![5.0, 6.0]])
+            .unwrap();
+        let y = vec![4.0, 5.0, 6.0];
+        let sample_weights = vec![1.0, 2.0, 3.0];
+
+        let x_repeated = DenseMatrix::from_2d_vec(&vec![
+            vec![1.0_f64, 2.0],
+            vec![3.0, 4.0],
+            vec![3.0, 4.0],
+            vec![5.0, 6.0],
+            vec![5.0, 6.0],
+            vec![5.0, 6.0],
+        ])
+        .unwrap();
+        let y_repeated = vec![4.0, 5.0, 5.0, 6.0, 6.0, 6.0];
+
+        let weighted_parameters = BaseTreeRegressorParameters {
+            max_depth: Some(1), // tree should not be able to fully separate all the examples
+            min_samples_leaf: 1,
+            min_samples_split: 1,
+            seed: Some(42),
+            splitter: Splitter::Best,
+            sample_weights: Some(sample_weights),
+        };
+
+        let repeated_parameters = BaseTreeRegressorParameters {
+            max_depth: Some(1),
+            min_samples_leaf: 1,
+            min_samples_split: 1,
+            seed: Some(42),
+            splitter: Splitter::Best,
+            sample_weights: None,
+        };
+
+        let tree_weighted =
+            BaseTreeRegressor::fit(&x, &y, weighted_parameters).expect("Fit should work");
+        let tree_repeated = BaseTreeRegressor::fit(&x_repeated, &y_repeated, repeated_parameters)
+            .expect("Fit should work");
+        // Predict on the same data
+        let y_pred_weighted = tree_weighted.predict(&x).expect("Predict should work");
+        let y_pred_repeated = tree_repeated.predict(&x).expect("Predict should work");
+
+        assert!(mean_absolute_error(&y_pred_weighted, &y_pred_repeated) < 1e-9);
     }
 }

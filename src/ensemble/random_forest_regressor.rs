@@ -84,6 +84,9 @@ pub struct RandomForestRegressorParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Seed used for bootstrap sampling and feature selection for each tree.
     pub seed: u64,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Optional sample weights.
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// Random Forest Regressor
@@ -136,6 +139,12 @@ impl RandomForestRegressorParameters {
         self.seed = seed;
         self
     }
+
+    /// Sample weights used during fit.
+    pub fn with_sample_weights(mut self, sample_weights: Vec<f64>) -> Self {
+        self.sample_weights = Some(sample_weights);
+        self
+    }
 }
 impl Default for RandomForestRegressorParameters {
     fn default() -> Self {
@@ -147,6 +156,7 @@ impl Default for RandomForestRegressorParameters {
             m: Option::None,
             keep_samples: false,
             seed: 0,
+            sample_weights: Option::None,
         }
     }
 }
@@ -208,6 +218,9 @@ pub struct RandomForestRegressorSearchParameters {
     #[cfg_attr(feature = "serde", serde(default))]
     /// Seed used for bootstrap sampling and feature selection for each tree.
     pub seed: Vec<u64>,
+    #[cfg_attr(feature = "serde", serde(default))]
+    /// Sample weights to be used during fit
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 /// RandomForestRegressor grid search iterator
@@ -285,6 +298,10 @@ impl Iterator for RandomForestRegressorSearchParametersIterator {
             keep_samples: self.random_forest_regressor_search_parameters.keep_samples
                 [self.current_keep_samples],
             seed: self.random_forest_regressor_search_parameters.seed[self.current_seed],
+            sample_weights: self
+                .random_forest_regressor_search_parameters
+                .sample_weights
+                .clone(),
         };
 
         if self.current_max_depth + 1
@@ -371,6 +388,7 @@ impl Default for RandomForestRegressorSearchParameters {
             m: vec![default_params.m],
             keep_samples: vec![default_params.keep_samples],
             seed: vec![default_params.seed],
+            sample_weights: default_params.sample_weights,
         }
     }
 }
@@ -396,6 +414,7 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
             seed: parameters.seed,
             bootstrap: true,
             splitter: Splitter::Best,
+            sample_weights: parameters.sample_weights,
         };
         let forest_regressor = BaseForestRegressor::fit(x, y, regressor_params)?;
 
@@ -488,6 +507,7 @@ mod tests {
                 m: Option::None,
                 keep_samples: false,
                 seed: 87,
+                sample_weights: None,
             },
         )
         .and_then(|rf| rf.predict(&x))
@@ -516,6 +536,7 @@ mod tests {
                 m: Option::None,
                 keep_samples: false,
                 seed: 87,
+                sample_weights: None,
             },
         );
 
@@ -563,6 +584,7 @@ mod tests {
                 m: Option::None,
                 keep_samples: true,
                 seed: 87,
+                sample_weights: None,
             },
         )
         .unwrap();

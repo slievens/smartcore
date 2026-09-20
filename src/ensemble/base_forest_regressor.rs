@@ -43,6 +43,8 @@ pub struct BaseForestRegressorParameters {
     pub bootstrap: bool,
     #[cfg_attr(feature = "serde", serde(default))]
     pub splitter: Splitter,
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub sample_weights: Option<Vec<f64>>,
 }
 
 impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>> PartialEq
@@ -113,8 +115,11 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
 
         for _ in 0..parameters.n_trees {
             if parameters.bootstrap {
-                samples =
-                    BaseForestRegressor::<TX, TY, X, Y>::sample_with_replacement(n_rows, &mut rng);
+                samples = BaseForestRegressor::<TX, TY, X, Y>::sample_with_replacement(
+                    n_rows,
+                    &mut rng,
+                    parameters.sample_weights.as_ref(),
+                );
             }
 
             // keep samples is flag is on
@@ -128,6 +133,7 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
                 min_samples_split: parameters.min_samples_split,
                 seed: Some(parameters.seed),
                 splitter: parameters.splitter.clone(),
+                sample_weights: parameters.sample_weights.clone(), // This is a little sad, a clone of the weights for every tree
             };
             let tree = BaseTreeRegressor::fit_weak_learner(x, y, samples.clone(), mtry, params)?;
             trees.push(tree);
@@ -216,12 +222,26 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
         result / TY::from(n_trees).unwrap()
     }
 
-    fn sample_with_replacement(nrows: usize, rng: &mut impl rand::Rng) -> Vec<usize> {
+    fn sample_with_replacement(
+        nrows: usize,
+        rng: &mut impl rand::Rng,
+        weights: Option<&Vec<f64>>,
+    ) -> Vec<usize> {
         let mut samples = vec![0; nrows];
-        for _ in 0..nrows {
-            let xi = rng.random_range(0..nrows);
-            samples[xi] += 1;
+        if let Some(weights) = weights {
+            let dist = rand::distr::weighted::WeightedIndex::new(weights)
+                .expect("weights must be non-negative and sum > 0");
+            for _ in 0..nrows {
+                let xi = rng.sample(&dist);
+                samples[xi] += 1;
+            }
+        } else {
+            for _ in 0..nrows {
+                let xi = rng.random_range(0..nrows);
+                samples[xi] += 1;
+            }
         }
+
         samples
     }
 }
@@ -246,6 +266,7 @@ mod tests {
             seed: 42,
             bootstrap: true,
             splitter: crate::tree::base_tree_regressor::Splitter::Best,
+            sample_weights: None,
         };
         let regressor = BaseForestRegressor::fit(&x, &y, params).unwrap();
         assert_eq!(regressor.trees.unwrap().len(), 5);
@@ -273,6 +294,7 @@ mod tests {
                 seed: 0,
                 bootstrap: true,
                 splitter: crate::tree::base_tree_regressor::Splitter::Best,
+                sample_weights: None,
             },
         );
         assert!(result.is_err());
@@ -300,6 +322,7 @@ mod tests {
                 seed: 0,
                 bootstrap: true,
                 splitter: crate::tree::base_tree_regressor::Splitter::Best,
+                sample_weights: None,
             },
         );
         assert!(result.is_err());
