@@ -148,6 +148,12 @@ impl ExtraTreesRegressorParameters {
         self.seed = seed;
         self
     }
+
+    /// Sample weights used during fit.
+    pub fn with_sample_weights(mut self, sample_weights: Vec<f64>) -> Self {
+        self.sample_weights = Some(sample_weights);
+        self
+    }
 }
 impl Default for ExtraTreesRegressorParameters {
     fn default() -> Self {
