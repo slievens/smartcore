@@ -28,7 +28,7 @@ ndarray = { version = "0.17", optional = true }
 num-traits = "0.2.12"
 num = "0.4"
 rand = { version = "0.10.1", default-features = false, features = ["alloc"] }
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive", "rc"], optional = true }
 ordered-float = "5.1.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

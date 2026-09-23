@@ -2,6 +2,7 @@ use std::collections::LinkedList;
 use std::default::Default;
 use std::fmt::Debug;
 use std::marker::PhantomData;
+use std::rc::Rc;
 
 use rand::RngExt;
 use rand::seq::SliceRandom;
@@ -44,7 +45,7 @@ pub struct BaseTreeRegressorParameters {
     pub splitter: Splitter,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Optional sample weights
-    pub sample_weights: Option<Vec<f64>>,
+    pub sample_weights: Option<Rc<[f64]>>,
 }
 
 /// Regression base_tree
@@ -134,7 +135,7 @@ struct NodeVisitor<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Ar
     y: &'a Y,
     node: usize,
     samples: Vec<usize>,
-    sample_weights: &'a Vec<f64>,
+    sample_weights: Rc<[f64]>,
     order: &'a [Vec<usize>],
     true_child_output: f64,
     false_child_output: f64,
@@ -149,7 +150,7 @@ impl<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
     fn new(
         node_id: usize,
         samples: Vec<usize>,
-        sample_weights: &'a Vec<f64>,
+        sample_weights: Rc<[f64]>,
         order: &'a [Vec<usize>],
         x: &'a X,
         y: &'a Y,
@@ -219,11 +220,10 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut nodes: Vec<Node> = Vec::new();
         let mut rng = get_rng_impl(parameters.seed);
 
-        // Note: this will clone sample_weights, which is sad
-        let sample_weights: Vec<f64> = parameters
+        let sample_weights = parameters
             .sample_weights
             .clone()
-            .unwrap_or_else(|| vec![1.0; y_ncols]);
+            .unwrap_or_else(|| Rc::from(vec![1.0; y_ncols]));
 
         let mut sum = 0f64;
         let mut mass = 0f64;
@@ -257,7 +257,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         };
 
         let mut visitor =
-            NodeVisitor::<TX, TY, X, Y>::new(0, samples, &sample_weights, &order, x, &y_m, 1);
+            NodeVisitor::<TX, TY, X, Y>::new(0, samples, sample_weights, &order, x, &y_m, 1);
 
         let mut visitor_queue: LinkedList<NodeVisitor<'_, TX, TY, X, Y>> = LinkedList::new();
 
@@ -565,7 +565,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut true_visitor = NodeVisitor::<TX, TY, X, Y>::new(
             true_child_idx,
             true_samples,
-            visitor.sample_weights,
+            visitor.sample_weights.clone(),
             visitor.order,
             visitor.x,
             visitor.y,
@@ -579,7 +579,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut false_visitor = NodeVisitor::<TX, TY, X, Y>::new(
             false_child_idx,
             visitor.samples,
-            visitor.sample_weights,
+            visitor.sample_weights.clone(),
             visitor.order,
             visitor.x,
             visitor.y,
@@ -668,7 +668,7 @@ mod tests {
                 min_samples_split: 2,
                 seed: None,
                 splitter: Splitter::Best,
-                sample_weights: Some(sample_weights.clone()),
+                sample_weights: Some(Rc::from(sample_weights.clone())),
             },
         );
         assert!(result.is_ok());
@@ -702,7 +702,7 @@ mod tests {
             min_samples_split: 1,
             seed: Some(42),
             splitter: Splitter::Best,
-            sample_weights: Some(vec![1.0f64; 17]),
+            sample_weights: Some(Rc::from(vec![1.0f64; 17])),
         };
         let tree_no_weights =
             BaseTreeRegressor::fit(&x_rand, &y_rand, parameters).expect("Fit should work");
@@ -743,7 +743,7 @@ mod tests {
             min_samples_split: 1,
             seed: Some(42),
             splitter: Splitter::Best,
-            sample_weights: Some(sample_weights),
+            sample_weights: Some(Rc::from(sample_weights)),
         };
 
         let repeated_parameters = BaseTreeRegressorParameters {

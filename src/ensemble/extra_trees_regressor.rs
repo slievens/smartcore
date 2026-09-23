@@ -54,6 +54,7 @@
 
 use std::default::Default;
 use std::fmt::Debug;
+use std::rc::Rc;
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -95,7 +96,7 @@ pub struct ExtraTreesRegressorParameters {
     pub seed: u64,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Optional sample weights.
-    pub sample_weights: Option<Vec<f64>>,
+    pub sample_weights: Option<Rc<[f64]>>,
 }
 
 /// Extra Trees Regressor
@@ -151,7 +152,7 @@ impl ExtraTreesRegressorParameters {
 
     /// Sample weights used during fit.
     pub fn with_sample_weights(mut self, sample_weights: Vec<f64>) -> Self {
-        self.sample_weights = Some(sample_weights);
+        self.sample_weights = Some(Rc::from(sample_weights));
         self
     }
 }
