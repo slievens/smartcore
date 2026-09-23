@@ -766,6 +766,7 @@ mod tests {
         assert!(mean_absolute_error(&y_pred_weighted, &y_pred_repeated) < 1e-9);
     }
 
+    #[test]
     fn full_depth() {
         let x = DenseMatrix::from_2d_vec(&vec![
             vec![1.0_f64],
