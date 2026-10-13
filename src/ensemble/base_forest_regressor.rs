@@ -11,7 +11,9 @@ use crate::numbers::basenum::Number;
 use crate::numbers::floatnum::FloatNumber;
 
 use crate::rand_custom::get_rng_impl;
-use crate::tree::base_tree_regressor::{BaseTreeRegressor, BaseTreeRegressorParameters, Splitter};
+use crate::tree::base_tree_regressor::{
+    BaseTreeRegressor, BaseTreeRegressorParameters, Splitter, targets_as_f64,
+};
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -129,6 +131,7 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
             order.push(col_i.argsort_mut());
         }
 
+        let targets = targets_as_f64(y)?; // convert the targets only once
         for tree_idx in 0..parameters.n_trees {
             if parameters.bootstrap {
                 samples = BaseForestRegressor::<TX, TY, X, Y>::sample_with_replacement(
@@ -156,9 +159,10 @@ impl<TX: Number + FloatNumber + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1
             } else {
                 sample_weights
             };
+
             let tree = BaseTreeRegressor::fit_weak_learner(
                 x,
-                y,
+                &targets,
                 sample_weights_for_base_tree,
                 samples.clone(),
                 mtry,

@@ -124,9 +124,9 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>> PartialE
     }
 }
 
-struct NodeVisitor<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>> {
+struct NodeVisitor<'a, TX: Number + PartialOrd, X: Array2<TX>> {
     x: &'a X,
-    y: &'a Y,
+    y: &'a [f64],
     node: usize,
     start_idx: usize, // start index for the elements in `sorted_by_feature` of SplitWorkspace
     end_idx: usize,   // end index (exclusive) in the same vector(s)
@@ -134,18 +134,15 @@ struct NodeVisitor<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Ar
     false_child_output: f64,
     level: u16,
     _phantom_tx: PhantomData<TX>,
-    _phantom_ty: PhantomData<TY>,
 }
 
-impl<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
-    NodeVisitor<'a, TX, TY, X, Y>
-{
+impl<'a, TX: Number + PartialOrd, X: Array2<TX>> NodeVisitor<'a, TX, X> {
     fn new(
         node_id: usize,
         start_idx: usize,
         end_idx: usize,
         x: &'a X,
-        y: &'a Y,
+        y: &'a [f64],
         level: u16,
     ) -> Self {
         NodeVisitor {
@@ -158,7 +155,6 @@ impl<'a, TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             false_child_output: 0f64,
             level,
             _phantom_tx: PhantomData,
-            _phantom_ty: PhantomData,
         }
     }
 }
@@ -179,6 +175,18 @@ fn check_row_count(n_rows: usize) -> Result<(), Failed> {
         ));
     }
     Ok(())
+}
+
+/// Convert the targets once to f64.
+pub(crate) fn targets_as_f64<TY: Number, Y: Array1<TY>>(y: &Y) -> Result<Vec<f64>, Failed> {
+    let mut result = Vec::with_capacity(y.shape());
+    for t in y.iterator(0) {
+        result.push(
+            t.to_f64()
+                .ok_or_else(|| Failed::fit("Targets must be convertible to f64"))?,
+        );
+    }
+    Ok(result)
 }
 
 // Trait representing an element that belongs logically to a Node. Implementations of it are stored in SplitWorkspace
@@ -371,9 +379,10 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         }
 
         let samples = vec![1; x_nrows];
+        let targets = targets_as_f64(y)?;
         BaseTreeRegressor::fit_weak_learner(
             x,
-            y,
+            &targets,
             sample_weights,
             samples,
             num_attributes,
@@ -384,14 +393,14 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
 
     pub(crate) fn fit_weak_learner(
         x: &X,
-        y: &Y,
+        y: &[f64],
         sample_weights: Option<&[f64]>,
         samples: Vec<usize>,
         mtry: usize,
         order: &[Vec<usize>],
         parameters: BaseTreeRegressorParameters,
     ) -> Result<BaseTreeRegressor<TX, TY, X, Y>, Failed> {
-        check_row_count(y.shape())?;
+        check_row_count(y.len())?;
         match sample_weights {
             Some(_) => Self::grow::<WeightedElement>(
                 x,
@@ -413,14 +422,14 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
 
     fn grow<E: NodeElement>(
         x: &X,
-        y: &Y,
+        y: &[f64],
         sample_weights: Option<&[f64]>,
         samples: Vec<usize>,
         mtry: usize,
         order: &[Vec<usize>],
         parameters: BaseTreeRegressorParameters,
     ) -> Result<BaseTreeRegressor<TX, TY, X, Y>, Failed> {
-        let n_rows = y.shape();
+        let n_rows = y.len();
 
         let mut nodes: Vec<Node> = Vec::new();
         let mut rng = get_rng_impl(parameters.seed);
@@ -431,7 +440,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         for i in 0..n_rows {
             let mass_i = mass_of(i, &samples, sample_weights);
             mass += mass_i;
-            sum += mass_i * y.get(i).to_f64().unwrap();
+            sum += mass_i * y[i];
         }
 
         let root = Node::new(sum / mass);
@@ -475,9 +484,9 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             _phantom_y: PhantomData,
         };
 
-        let mut visitor = NodeVisitor::<TX, TY, X, Y>::new(0, 0, end_idx, x, y, 1);
+        let mut visitor = NodeVisitor::<TX, X>::new(0, 0, end_idx, x, y, 1);
 
-        let mut visitor_stack: Vec<NodeVisitor<'_, TX, TY, X, Y>> = Vec::new();
+        let mut visitor_stack: Vec<NodeVisitor<'_, TX, X>> = Vec::new();
 
         if base_tree.find_best_cutoff(&mut visitor, mtry, mass, &mut rng, &mut workspace) {
             visitor_stack.push(visitor);
@@ -527,7 +536,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
 
     fn find_best_cutoff<E: NodeElement>(
         &mut self,
-        visitor: &mut NodeVisitor<'_, TX, TY, X, Y>,
+        visitor: &mut NodeVisitor<'_, TX, X>,
         mtry: usize,
         mass: f64,
         rng: &mut impl rand::Rng,
@@ -580,7 +589,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
 
     fn find_random_split<E: NodeElement>(
         &mut self,
-        visitor: &mut NodeVisitor<'_, TX, TY, X, Y>,
+        visitor: &mut NodeVisitor<'_, TX, X>,
         n: usize,
         mass: f64,
         sum: f64,
@@ -613,7 +622,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut true_count = 0;
         for elem in &workspace.sorted_by_feature[j][visitor.start_idx..visitor.end_idx] {
             if visitor.x.get((elem.row(), j)).to_f64().unwrap() <= split_value {
-                true_sum += elem.mass() * visitor.y.get(elem.row()).to_f64().unwrap();
+                true_sum += elem.mass() * visitor.y[elem.row()];
                 true_count += elem.count();
                 true_mass += elem.mass();
             } else {
@@ -656,7 +665,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
 
     fn find_best_split<E: NodeElement>(
         &mut self,
-        visitor: &mut NodeVisitor<'_, TX, TY, X, Y>,
+        visitor: &mut NodeVisitor<'_, TX, X>,
         n: usize,
         mass: f64,
         sum: f64,
@@ -667,18 +676,19 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
         let mut true_sum = 0f64;
         let mut true_count = 0;
         let mut true_mass = 0f64;
-        let mut prevx = Option::None;
+        let first_row_idx = workspace.sorted_by_feature[j][visitor.start_idx].row();
+        let mut prevx = visitor.x.get((first_row_idx, j)).to_f64().unwrap();
 
         for elem in &workspace.sorted_by_feature[j][visitor.start_idx..visitor.end_idx] {
             // Comparison for equality is done directly on f64 to avoid later problems
             // with values being unequal in TX but equal in f64.
             let x_ij = visitor.x.get((elem.row(), j)).to_f64().unwrap();
 
-            if prevx.is_none() || x_ij == prevx.unwrap() {
-                prevx = Some(x_ij);
+            if x_ij == prevx {
+                prevx = x_ij;
                 true_count += elem.count();
                 true_mass += elem.mass();
-                true_sum += elem.mass() * visitor.y.get(elem.row()).to_f64().unwrap();
+                true_sum += elem.mass() * visitor.y[elem.row()];
                 continue;
             }
 
@@ -687,10 +697,10 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             if true_count < self.parameters().min_samples_leaf
                 || false_count < self.parameters().min_samples_leaf
             {
-                prevx = Some(x_ij);
+                prevx = x_ij;
                 true_count += elem.count();
                 true_mass += elem.mass();
-                true_sum += elem.mass() * visitor.y.get(elem.row()).to_f64().unwrap();
+                true_sum += elem.mass() * visitor.y[elem.row()];
                 continue;
             }
 
@@ -712,15 +722,14 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             if self.nodes[visitor.node].split_score.is_none()
                 || gain > self.nodes[visitor.node].split_score.unwrap()
             {
-                let prev = prevx.unwrap();
                 // compute the midpoint in a way that does not overflow when x_ij and prevx have the same sign
-                let mid = prev + (x_ij - prev) / 2.0;
+                let mid = prevx + (x_ij - prevx) / 2.0;
 
                 // The midpoint should put prevx in the true branch, and x_ij in the false branch.
                 // However, mid could round up to x_ij, in which case we would also assign x_ij to the true branch.
                 // In this case, we set the midpoint equal to prevx, which is always smaller
                 // than x_ij.
-                let threshold = if mid < x_ij { mid } else { prev };
+                let threshold = if mid < x_ij { mid } else { prevx };
                 self.nodes[visitor.node].split_feature = j;
                 self.nodes[visitor.node].split_value = Option::Some(threshold);
                 self.nodes[visitor.node].split_score = Option::Some(gain);
@@ -729,8 +738,8 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
                 visitor.false_child_output = false_mean;
             }
 
-            prevx = Some(x_ij);
-            true_sum += elem.mass() * visitor.y.get(elem.row()).to_f64().unwrap();
+            prevx = x_ij;
+            true_sum += elem.mass() * visitor.y[elem.row()];
             true_count += elem.count();
             true_mass += elem.mass();
         }
@@ -744,9 +753,9 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
     /// keep the node as a leaf.
     fn split<'a, E: NodeElement>(
         &mut self,
-        visitor: NodeVisitor<'a, TX, TY, X, Y>,
+        visitor: NodeVisitor<'a, TX, X>,
         mtry: usize,
-        visitor_stack: &mut Vec<NodeVisitor<'a, TX, TY, X, Y>>,
+        visitor_stack: &mut Vec<NodeVisitor<'a, TX, X>>,
         rng: &mut impl rand::Rng,
         workspace: &mut SplitWorkspace<E>,
     ) -> bool {
@@ -821,7 +830,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             );
         }
 
-        let mut true_visitor = NodeVisitor::<TX, TY, X, Y>::new(
+        let mut true_visitor = NodeVisitor::<TX, X>::new(
             true_child_idx,
             visitor.start_idx,
             split_idx,
@@ -836,7 +845,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
             visitor_stack.push(true_visitor);
         }
 
-        let mut false_visitor = NodeVisitor::<TX, TY, X, Y>::new(
+        let mut false_visitor = NodeVisitor::<TX, X>::new(
             false_child_idx,
             split_idx,
             visitor.end_idx,
