@@ -539,6 +539,42 @@ impl<TX: FloatNumber + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY
             )),
         }
     }
+
+    /// Compute the feature importances for this forest.
+    /// * returns: a vector where index `j` gives the feature importances for feature `j`
+    ///
+    /// ```
+    /// use smartcore::ensemble::random_forest_classifier::*;
+    /// use smartcore::linalg::basic::matrix::DenseMatrix;
+    ///
+    /// // Only column 0 carries information: the class is a threshold on column 0.
+    /// // Column 1 is a permutation of the row index, so it is noise.
+    /// let n = 50;
+    /// let rows: Vec<Vec<f64>> = (0..n)
+    ///     .map(|i| vec![i as f64, ((i * 37) % n) as f64])
+    ///     .collect();
+    /// let x = DenseMatrix::from_2d_vec(&rows).unwrap();
+    /// let y: Vec<u32> = (0..n).map(|i| if i < n / 2 { 0 } else { 1 }).collect();
+    ///
+    /// let parameters = RandomForestClassifierParameters::default()
+    ///     .with_n_trees(20)
+    ///     .with_m(2)
+    ///     .with_seed(42);
+    /// let forest = RandomForestClassifier::fit(&x, &y, parameters).unwrap();
+    ///
+    /// let importances = forest.compute_feature_importances().unwrap();
+    /// // The importances of a forest are normalized: they add up to 1.
+    /// assert!((importances.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+    /// assert!(importances[0] > importances[1]);
+    /// ```
+    pub fn compute_feature_importances(&self) -> Result<Vec<f64>, Failed> {
+        match &self.forest_classifier {
+            Some(forest) => forest.compute_feature_importances(),
+            None => Err(Failed::predict(
+                "'fit' should be called before calling 'compute_feature_importances'",
+            )),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -982,5 +1018,158 @@ mod tests {
         assert_eq!(forest.predict(&x).unwrap(), y);
         assert_eq!(forest.predict(&x_new).unwrap(), vec![5; 3]);
         assert_eq!(forest.predict_oob(&x).unwrap(), y);
+    }
+
+    /// Data where only column 0 carries information: the class is a threshold on column 0.
+    /// Columns 1 and 2 are permutations of the row index, so they do not separate the two classes.
+    fn threshold_data() -> (DenseMatrix<f64>, Vec<u32>) {
+        let n = 50;
+        let rows: Vec<Vec<f64>> = (0..n)
+            .map(|i| vec![i as f64, ((i * 37) % n) as f64, ((i * 17) % n) as f64])
+            .collect();
+        let y = (0..n).map(|i| if i < n / 2 { 0 } else { 1 }).collect();
+        (DenseMatrix::from_2d_vec(&rows).unwrap(), y)
+    }
+
+    #[test]
+    fn feature_importances_unfitted_returns_error() {
+        let rf =
+            <RandomForestClassifier<f64, u32, DenseMatrix<f64>, Vec<u32>> as SupervisedEstimator<
+                DenseMatrix<f64>,
+                Vec<u32>,
+                RandomForestClassifierParameters,
+            >>::new();
+        let result = rf.compute_feature_importances();
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().error(), FailedError::PredictFailed);
+    }
+
+    #[test]
+    fn feature_importances_sum_to_one() {
+        let (x, y) = threshold_data();
+        for m in [1, 2, 3] {
+            let rf = RandomForestClassifier::fit(
+                &x,
+                &y,
+                RandomForestClassifierParameters::default()
+                    .with_n_trees(50)
+                    .with_m(m)
+                    .with_seed(42),
+            )
+            .unwrap();
+            let importances = rf.compute_feature_importances().unwrap();
+            assert_eq!(importances.len(), 3);
+            assert!(importances.iter().all(|&v| v >= 0.0 && v.is_finite()));
+            assert!((importances.iter().sum::<f64>() - 1.0).abs() < 1e-12);
+        }
+    }
+
+    #[test]
+    fn feature_importances_find_informative_feature() {
+        let (x, y) = threshold_data();
+
+        // All features are tried at each split. The root split on column 0 is perfect, so the
+        // children are pure, and all the impurity decrease goes to column 0.
+        let rf = RandomForestClassifier::fit(
+            &x,
+            &y,
+            RandomForestClassifierParameters::default()
+                .with_n_trees(20)
+                .with_m(3)
+                .with_seed(42),
+        )
+        .unwrap();
+        let importances = rf.compute_feature_importances().unwrap();
+        assert!((importances[0] - 1.0).abs() < 1e-12);
+        assert!(importances[1] < 1e-12);
+        assert!(importances[2] < 1e-12);
+
+        // One random feature per split: noise columns get some importance,
+        // but column 0 must still be the most important.
+        let rf = RandomForestClassifier::fit(
+            &x,
+            &y,
+            RandomForestClassifierParameters::default()
+                .with_n_trees(100)
+                .with_m(1)
+                .with_seed(42),
+        )
+        .unwrap();
+        let importances = rf.compute_feature_importances().unwrap();
+        assert!(importances[0] > importances[1]);
+        assert!(importances[0] > importances[2]);
+    }
+
+    #[test]
+    fn feature_importances_find_informative_feature_for_each_criterion() {
+        let (x, y) = threshold_data();
+        for criterion in [
+            SplitCriterion::Gini,
+            SplitCriterion::Entropy,
+            SplitCriterion::ClassificationError,
+        ] {
+            let rf = RandomForestClassifier::fit(
+                &x,
+                &y,
+                RandomForestClassifierParameters::default()
+                    .with_criterion(criterion.clone())
+                    .with_n_trees(20)
+                    .with_m(3)
+                    .with_seed(42),
+            )
+            .unwrap();
+            let importances = rf.compute_feature_importances().unwrap();
+            assert!(
+                (importances[0] - 1.0).abs() < 1e-12,
+                "{criterion:?}: {importances:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn feature_importances_are_deterministic_for_a_seed() {
+        let (x, y) = threshold_data();
+        let parameters = RandomForestClassifierParameters::default()
+            .with_n_trees(20)
+            .with_m(1)
+            .with_seed(7);
+        let a = RandomForestClassifier::fit(&x, &y, parameters.clone())
+            .unwrap()
+            .compute_feature_importances()
+            .unwrap();
+        let b = RandomForestClassifier::fit(&x, &y, parameters)
+            .unwrap()
+            .compute_feature_importances()
+            .unwrap();
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn feature_importances_are_zero_without_improvement() {
+        let (x, y) = threshold_data();
+
+        // max_depth 1: every tree is only a root.
+        let rf = RandomForestClassifier::fit(
+            &x,
+            &y,
+            RandomForestClassifierParameters::default()
+                .with_n_trees(5)
+                .with_max_depth(1)
+                .with_seed(42),
+        )
+        .unwrap();
+        assert_eq!(rf.compute_feature_importances().unwrap(), vec![0.0; 3]);
+
+        // One class: every tree is one leaf, so no split decreases the impurity.
+        let y_const = vec![3; y.len()];
+        let rf = RandomForestClassifier::fit(
+            &x,
+            &y_const,
+            RandomForestClassifierParameters::default()
+                .with_n_trees(5)
+                .with_seed(42),
+        )
+        .unwrap();
+        assert_eq!(rf.compute_feature_importances().unwrap(), vec![0.0; 3]);
     }
 }
