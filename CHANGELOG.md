@@ -6,6 +6,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.8.0] - Unreleased
 
+### Added
+- `tree`, `ensemble`: `DecisionTreeClassifier` & `RandomForestClassifier`: `fit_with_weights` method added
+- `ensemble`: `RandomForestClassifier`: `compute_feature_importances` method added
+
 ### Changed
 - `tree`, `ensemble`: `DecisionTreeClassifier` and `RandomForestClassifier` now use `BaseTree` and `BaseForest`, the same code as the regressors. The new `GiniCriterion`, `EntropyCriterion` and `ClassificationErrorCriterion` implement the `Criterion` trait. The entropy improvement uses a numerically stable formula that is never negative. Exactly tied splits can be broken in a different way, so fitted trees can differ slightly from earlier versions.
 - `tree`: `DecisionTreeClassifier` always shuffles the features, also when `mtry` equals the number of attributes, as the regressors do. Without a fixed `seed`, exactly tied splits can give different trees for each fit. Set `seed` to get reproducible trees.
@@ -15,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tree`: the error text for an unfitted `DecisionTreeClassifier::predict_proba` changed from "'fit' should be called before calling 'predict'" to "'fit' should be called before calling 'predict_proba'". Code that matched the old string must be updated.
 - **Breaking change:** `tree`, `ensemble`: the fitted `DecisionTreeClassifier` and `RandomForestClassifier` store different fields. Models serialized with an earlier version cannot be deserialized. Fit these models again.
 - **Breaking change:** `tree`, `ensemble`. The `Node` enum is optimised to be smaller. As a result trees and ensembles serialized with older code no longer can be deserialised.
+ 
+
 
 ## [0.7.0] - 2026-10-26
 ### Added
