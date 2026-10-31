@@ -79,6 +79,7 @@ use crate::linalg::basic::matrix::DenseMatrix;
 use crate::numbers::basenum::Number;
 use crate::tree::base_tree::{BaseTree, BaseTreeParameters, Splitter};
 use crate::tree::criterion::{ClassificationErrorCriterion, EntropyCriterion, GiniCriterion};
+use crate::tree::validate_sample_weights;
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -398,6 +399,20 @@ impl<TX: Number + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY>>
         parameters: DecisionTreeClassifierParameters,
     ) -> Result<DecisionTreeClassifier<TX, TY, X, Y>, Failed> {
         Self::fit_inner(x, y, None, parameters)
+    }
+
+    /// Build a decision tree classifier from the training data.
+    /// * `x` - _NxM_ matrix with _N_ observations and _M_ features in each observation.
+    /// * `y` - the target class values
+    /// * `sample_weights` - weights to use during fitting
+    pub fn fit_with_weights(
+        x: &X,
+        y: &Y,
+        sample_weights: &[f64],
+        parameters: DecisionTreeClassifierParameters,
+    ) -> Result<DecisionTreeClassifier<TX, TY, X, Y>, Failed> {
+        validate_sample_weights(sample_weights, x.shape().0)?;
+        Self::fit_inner(x, y, Some(sample_weights), parameters)
     }
 
     fn fit_inner(
@@ -1002,5 +1017,237 @@ mod tests {
             tree.compute_feature_importances(true).unwrap(),
             vec![0.0; 2]
         );
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_with_weights_validates_weights() {
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator((0..6).map(|i| i as f64), 3, 2, 0);
+        let y = vec![0_i32, 1, 0];
+        let parameters = DecisionTreeClassifierParameters::default();
+
+        // Valid weights: a zero weight is permitted when the sum is positive
+        for weights in [vec![1.0, 2.0, 3.0], vec![0.0, 0.0, 0.5]] {
+            assert!(
+                DecisionTreeClassifier::fit_with_weights(&x, &y, &weights, parameters.clone())
+                    .is_ok(),
+                "weights: {weights:?}"
+            );
+        }
+
+        let wrong_length = "Number of sample weights must equal number of rows in x";
+        let not_finite_or_negative = "Sample weights must be finite and non-negative";
+        let zero_sum = "Sum of sample weights must be positive";
+        let cases: Vec<(Vec<f64>, &str)> = vec![
+            (vec![], wrong_length),
+            (vec![1.0, 2.0], wrong_length),
+            (vec![1.0, 2.0, 3.0, 4.0], wrong_length),
+            (vec![1.0, -1.0, 3.0], not_finite_or_negative),
+            (vec![1.0, f64::NAN, 3.0], not_finite_or_negative),
+            (vec![1.0, f64::INFINITY, 3.0], not_finite_or_negative),
+            (vec![0.0, 0.0, 0.0], zero_sum),
+        ];
+        for (weights, msg) in cases {
+            let result =
+                DecisionTreeClassifier::fit_with_weights(&x, &y, &weights, parameters.clone());
+            assert_eq!(result.err(), Some(Failed::fit(msg)), "weights: {weights:?}");
+        }
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_with_weights_changes_leaf_majority() {
+        // All rows are equal, thus no split is possible and the tree is one leaf.
+        let x = DenseMatrix::from_2d_array(&[&[1.0, 1.0], &[1.0, 1.0], &[1.0, 1.0]]).unwrap();
+        let y: Vec<i32> = vec![0, 0, 1];
+
+        // Without weights, class 0 has the majority (2 rows against 1)
+        let tree = DecisionTreeClassifier::fit(&x, &y, Default::default()).unwrap();
+        assert_eq!(tree.depth(), 0);
+        assert_eq!(tree.predict(&x).unwrap(), vec![0; 3]);
+
+        // With weights, class 1 has the majority (weight 5 against 2)
+        let weights = [1.0, 1.0, 5.0];
+        let tree =
+            DecisionTreeClassifier::fit_with_weights(&x, &y, &weights, Default::default()).unwrap();
+        assert_eq!(tree.depth(), 0);
+        assert_eq!(tree.predict(&x).unwrap(), vec![1; 3]);
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_with_weights_changes_split() {
+        // One feature and one split. The candidate thresholds are 1.5, 2.5 and 3.5.
+        //
+        // Weights [1, 1, 1, 3], weighted Gini of the children:
+        //   x <= 1.5: {0: 1} | {0: 1, 1: 4} -> 1/6 * 0 + 5/6 * 8/25           = 0.267
+        //   x <= 2.5: {0: 1, 1: 1} | {0: 1, 1: 3} -> 2/6 * 1/2 + 4/6 * 3/8    = 0.417
+        //   x <= 3.5: {0: 2, 1: 1} | {1: 3} -> 3/6 * 4/9 + 3/6 * 0            = 0.222
+        // Thus the split is x <= 3.5, the left leaf is class 0 and the right leaf is class 1.
+        // Entropy gives the same split (0.602, 0.874 and 0.459 bits).
+        //
+        // Weights [3, 1, 1, 1] are the mirror case: the split is x <= 1.5, the left leaf is
+        // class 0 and the right leaf {0: 1, 1: 2} is class 1.
+        //
+        // The classification error criterion has a tie between 1.5 and 3.5, thus this test
+        // does not use it.
+        let x = DenseMatrix::from_2d_array(&[&[1.0], &[2.0], &[3.0], &[4.0]]).unwrap();
+        let y: Vec<i32> = vec![0, 1, 0, 1];
+        let probes = DenseMatrix::from_2d_array(&[&[1.4], &[1.6], &[3.4], &[3.6]]).unwrap();
+
+        // (weights, expected on x, expected on probes)
+        let cases: [([f64; 4], Vec<i32>, Vec<i32>); 2] = [
+            ([1.0, 1.0, 1.0, 3.0], vec![0, 0, 0, 1], vec![0, 0, 0, 1]),
+            ([3.0, 1.0, 1.0, 1.0], vec![0, 1, 1, 1], vec![0, 1, 1, 1]),
+        ];
+
+        for criterion in [SplitCriterion::Gini, SplitCriterion::Entropy] {
+            // smartcore counts the root as level 1, thus max_depth = 2 gives one split
+            let parameters = DecisionTreeClassifierParameters::default()
+                .with_criterion(criterion.clone())
+                .with_max_depth(2);
+            for (weights, expected_x, expected_probes) in &cases {
+                let tree =
+                    DecisionTreeClassifier::fit_with_weights(&x, &y, weights, parameters.clone())
+                        .unwrap();
+                assert_eq!(tree.depth(), 2, "{criterion:?}, weights: {weights:?}");
+                assert_eq!(
+                    tree.tree_classifier.as_ref().unwrap().num_nodes(),
+                    3usize,
+                    "{criterion:?}, weights: {weights:?}"
+                );
+                assert_eq!(
+                    &tree.predict(&x).unwrap(),
+                    expected_x,
+                    "{criterion:?}, weights: {weights:?}"
+                );
+                assert_eq!(
+                    &tree.predict(&probes).unwrap(),
+                    expected_probes,
+                    "{criterion:?}, weights: {weights:?}"
+                );
+            }
+        }
+    }
+
+    /// Training data for the tests that compare two weighted fits.
+    /// All values in a column are different.
+    fn weighted_fit_data() -> (Vec<Vec<f64>>, Vec<i32>, Vec<f64>) {
+        let x = vec![
+            vec![1.0, 5.0],
+            vec![2.0, 3.0],
+            vec![3.0, 8.0],
+            vec![4.0, 1.0],
+            vec![5.0, 7.0],
+            vec![6.0, 2.0],
+            vec![7.0, 6.0],
+            vec![8.0, 4.0],
+        ];
+        let y = vec![0, 1, 2, 0, 1, 2, 0, 1];
+        let weights = vec![1.0, 3.0, 2.0, 1.0, 2.0, 1.0, 3.0, 1.0];
+        (x, y, weights)
+    }
+
+    /// Grid of probe points that covers the training data and some points outside it.
+    fn probe_grid() -> DenseMatrix<f64> {
+        let mut rows = Vec::new();
+        for i in 0..=18 {
+            for j in 0..=18 {
+                rows.push(vec![0.5 * i as f64, 0.5 * j as f64]);
+            }
+        }
+        DenseMatrix::from_2d_vec(&rows).unwrap()
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_with_integer_weights_equals_repeated_rows() {
+        // A row with integer weight w must give the same tree as w copies of that row.
+        // The thresholds are midpoints between different values, thus they are the same
+        // in the two fits. Small integer masses are exact in f64. The two fits visit the
+        // same nodes in the same order, thus the seeded feature shuffle is also the same.
+        let (x_rows, y, weights) = weighted_fit_data();
+        let x = DenseMatrix::from_2d_vec(&x_rows).unwrap();
+
+        let mut x_rep_rows = Vec::new();
+        let mut y_rep = Vec::new();
+        for ((row, label), weight) in x_rows.iter().zip(y.iter()).zip(weights.iter()) {
+            for _ in 0..(*weight as usize) {
+                x_rep_rows.push(row.clone());
+                y_rep.push(*label);
+            }
+        }
+        let x_rep = DenseMatrix::from_2d_vec(&x_rep_rows).unwrap();
+
+        let probes = probe_grid();
+        for criterion in [
+            SplitCriterion::Gini,
+            SplitCriterion::Entropy,
+            SplitCriterion::ClassificationError,
+        ] {
+            let parameters = DecisionTreeClassifierParameters {
+                criterion: criterion.clone(),
+                seed: Some(42),
+                ..Default::default()
+            };
+            let weighted =
+                DecisionTreeClassifier::fit_with_weights(&x, &y, &weights, parameters.clone())
+                    .unwrap();
+            let repeated = DecisionTreeClassifier::fit(&x_rep, &y_rep, parameters).unwrap();
+
+            assert_eq!(weighted.depth(), repeated.depth(), "{criterion:?}");
+            assert_eq!(
+                weighted.predict(&probes).unwrap(),
+                repeated.predict(&probes).unwrap(),
+                "{criterion:?}"
+            );
+        }
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_with_scaled_weights_gives_same_tree() {
+        // Multiplication by a power of two is exact in f64, thus all comparisons stay the same.
+        let (x_rows, y, weights) = weighted_fit_data();
+        let x = DenseMatrix::from_2d_vec(&x_rows).unwrap();
+        let scaled: Vec<f64> = weights.iter().map(|w| 0.25 * w).collect();
+
+        let probes = probe_grid();
+        for criterion in [
+            SplitCriterion::Gini,
+            SplitCriterion::Entropy,
+            SplitCriterion::ClassificationError,
+        ] {
+            let parameters = DecisionTreeClassifierParameters {
+                criterion: criterion.clone(),
+                seed: Some(42),
+                ..Default::default()
+            };
+            let a = DecisionTreeClassifier::fit_with_weights(&x, &y, &weights, parameters.clone())
+                .unwrap();
+            let b = DecisionTreeClassifier::fit_with_weights(&x, &y, &scaled, parameters).unwrap();
+
+            assert_eq!(a.depth(), b.depth(), "{criterion:?}");
+            assert_eq!(
+                a.predict(&probes).unwrap(),
+                b.predict(&probes).unwrap(),
+                "{criterion:?}"
+            );
+        }
     }
 }

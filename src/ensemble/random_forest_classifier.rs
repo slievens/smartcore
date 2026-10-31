@@ -65,6 +65,7 @@ use crate::numbers::floatnum::FloatNumber;
 use crate::tree::base_tree::Splitter;
 use crate::tree::criterion::{ClassificationErrorCriterion, EntropyCriterion, GiniCriterion};
 use crate::tree::decision_tree_classifier::SplitCriterion;
+use crate::tree::validate_sample_weights;
 
 /// Parameters of the Random Forest algorithm.
 /// Some parameters here are passed directly into base estimator.
@@ -445,6 +446,20 @@ impl<TX: FloatNumber + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY
         parameters: RandomForestClassifierParameters,
     ) -> Result<RandomForestClassifier<TX, TY, X, Y>, Failed> {
         Self::fit_inner(x, y, None, parameters)
+    }
+
+    /// Build a forest of trees from the training set.
+    /// * `x` - _NxM_ matrix with _N_ observations and _M_ features in each observation.
+    /// * `y` - the target class values
+    /// * `sample_weights`: sample_weights to use during fitting
+    pub fn fit_with_weights(
+        x: &X,
+        y: &Y,
+        sample_weights: &[f64],
+        parameters: RandomForestClassifierParameters,
+    ) -> Result<RandomForestClassifier<TX, TY, X, Y>, Failed> {
+        validate_sample_weights(sample_weights, x.shape().0)?;
+        Self::fit_inner(x, y, Some(sample_weights), parameters)
     }
 
     fn fit_inner(
@@ -1171,5 +1186,149 @@ mod tests {
         )
         .unwrap();
         assert_eq!(rf.compute_feature_importances().unwrap(), vec![0.0; 3]);
+    }
+
+    #[test]
+    fn fit_with_weights_validates_weights() {
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator((0..6).map(|i| i as f64), 3, 2, 0);
+        let y = vec![0_i32, 1, 0];
+        let parameters = RandomForestClassifierParameters::default()
+            .with_n_trees(5)
+            .with_seed(42);
+
+        // Valid weights: a zero weight is permitted when the sum is positive
+        for weights in [vec![1.0, 2.0, 3.0], vec![0.0, 0.0, 0.5]] {
+            assert!(
+                RandomForestClassifier::fit_with_weights(&x, &y, &weights, parameters.clone())
+                    .is_ok(),
+                "weights: {weights:?}"
+            );
+        }
+
+        let wrong_length = "Number of sample weights must equal number of rows in x";
+        let not_finite_or_negative = "Sample weights must be finite and non-negative";
+        let zero_sum = "Sum of sample weights must be positive";
+        let cases: Vec<(Vec<f64>, &str)> = vec![
+            (vec![], wrong_length),
+            (vec![1.0, 2.0], wrong_length),
+            (vec![1.0, 2.0, 3.0, 4.0], wrong_length),
+            (vec![1.0, -1.0, 3.0], not_finite_or_negative),
+            (vec![1.0, f64::NAN, 3.0], not_finite_or_negative),
+            (vec![1.0, f64::INFINITY, 3.0], not_finite_or_negative),
+            (vec![0.0, 0.0, 0.0], zero_sum),
+        ];
+        for (weights, msg) in cases {
+            let result =
+                RandomForestClassifier::fit_with_weights(&x, &y, &weights, parameters.clone());
+            assert_eq!(result.err(), Some(Failed::fit(msg)), "weights: {weights:?}");
+        }
+    }
+
+    #[test]
+    fn fit_with_weights_changes_majority() {
+        // 20 rows, 1 feature. With max_depth 1 every tree is only a root, thus each tree
+        // predicts the majority class of its bootstrap sample.
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator((0..20).map(|i| i as f64), 20, 1, 0);
+        // 12 rows of class 0 and 8 rows of class 1
+        let y: Vec<i32> = (0..20).map(|i| if i < 12 { 0 } else { 1 }).collect();
+        // Rows of class 1 have weight 9, rows of class 0 have weight 1
+        let sample_weights: Vec<f64> = y.iter().map(|c| if *c == 0 { 1.0 } else { 9.0 }).collect();
+
+        let parameters = RandomForestClassifierParameters::default()
+            .with_max_depth(1)
+            .with_n_trees(100)
+            .with_seed(42);
+
+        // Without weights, one draw gives class 1 with probability 8/20 = 0.4.
+        // Thus nearly all trees predict class 0.
+        let forest = RandomForestClassifier::fit(&x, &y, parameters.clone()).unwrap();
+        assert_eq!(forest.predict(&x).unwrap(), vec![0; 20]);
+
+        // With weights, one draw gives class 1 with probability 72/84 = 0.86.
+        // Thus nearly all trees predict class 1.
+        let forest =
+            RandomForestClassifier::fit_with_weights(&x, &y, &sample_weights, parameters).unwrap();
+        assert_eq!(forest.predict(&x).unwrap(), vec![1; 20]);
+    }
+
+    #[test]
+    fn fit_with_same_seed_is_deterministic() {
+        // 30 rows, 3 features, deterministic data
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator(
+            (0..90).map(|k| ((k % 17) as f64) / (10.0 + (k % 17) as f64)),
+            30,
+            3,
+            0,
+        );
+        let y: Vec<i32> = (0..30).map(|i| i % 3).collect();
+        let sample_weights: Vec<f64> = (0..30).map(|i| 1.0 + (i % 4) as f64).collect();
+
+        let parameters = RandomForestClassifierParameters::default()
+            .with_n_trees(20)
+            .with_m(2) // only use 2 attributes
+            .with_seed(42);
+
+        // Without weights
+        let forest_1 = RandomForestClassifier::fit(&x, &y, parameters.clone()).unwrap();
+        let forest_2 = RandomForestClassifier::fit(&x, &y, parameters.clone()).unwrap();
+        assert_eq!(forest_1, forest_2);
+        assert_eq!(forest_1.predict(&x).unwrap(), forest_2.predict(&x).unwrap());
+
+        // With weights
+        let forest_1 =
+            RandomForestClassifier::fit_with_weights(&x, &y, &sample_weights, parameters.clone())
+                .unwrap();
+        let forest_2 =
+            RandomForestClassifier::fit_with_weights(&x, &y, &sample_weights, parameters).unwrap();
+        assert_eq!(forest_1, forest_2);
+        assert_eq!(forest_1.predict(&x).unwrap(), forest_2.predict(&x).unwrap());
+    }
+
+    #[test]
+    fn fit_with_zero_weights_ignores_rows() {
+        // 20 rows, 1 feature. The clean labels are 0 for x < 10 and 1 for x >= 10.
+        // Rows 3 and 15 have the wrong label (label noise).
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator((0..20).map(|i| i as f64), 20, 1, 0);
+        let y_clean: Vec<i32> = (0..20).map(|i| if i < 10 { 0 } else { 1 }).collect();
+        let noisy_rows = [3, 15];
+        let mut y = y_clean.clone();
+        for &i in &noisy_rows {
+            y[i] = 1 - y[i];
+        }
+        // Only the noisy rows have weight 0
+        let sample_weights: Vec<f64> = (0..20)
+            .map(|i| if noisy_rows.contains(&i) { 0.0 } else { 1.0 })
+            .collect();
+
+        for criterion in [
+            SplitCriterion::Gini,
+            SplitCriterion::Entropy,
+            SplitCriterion::ClassificationError,
+        ] {
+            let parameters = RandomForestClassifierParameters::default()
+                .with_criterion(criterion.clone())
+                .with_n_trees(100)
+                .with_seed(42);
+
+            // A row with weight 0 is never in a bootstrap sample, thus no tree sees the
+            // noisy rows. The forest predicts the clean labels.
+            let forest = RandomForestClassifier::fit_with_weights(
+                &x,
+                &y,
+                &sample_weights,
+                parameters.clone(),
+            )
+            .unwrap();
+            assert_eq!(forest.predict(&x).unwrap(), y_clean, "{criterion:?}");
+
+            // Without weights, approximately 64% of the trees have a noisy row in their
+            // bootstrap sample. A full-depth tree isolates that row, thus the forest
+            // predicts the noisy label for that row.
+            let forest = RandomForestClassifier::fit(&x, &y, parameters).unwrap();
+            let y_hat = forest.predict(&x).unwrap();
+            for &i in &noisy_rows {
+                assert_eq!(y_hat[i], y[i], "{criterion:?}, row {i}");
+            }
+        }
     }
 }

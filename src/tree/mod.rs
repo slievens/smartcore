@@ -18,6 +18,7 @@
 //!
 //! <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
 //! <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+use crate::error::Failed;
 
 pub(crate) mod base_tree;
 pub(crate) mod criterion;
@@ -26,3 +27,21 @@ pub(crate) mod criterion;
 pub mod decision_tree_classifier;
 /// Regression tree for for dependent variables that take continuous or ordered discrete values.
 pub mod decision_tree_regressor;
+
+/// Validates the sample weights
+pub(crate) fn validate_sample_weights(sample_weights: &[f64], n_rows: usize) -> Result<(), Failed> {
+    if sample_weights.len() != n_rows {
+        return Err(Failed::fit(
+            "Number of sample weights must equal number of rows in x",
+        ));
+    }
+    if sample_weights.iter().any(|v| !v.is_finite() || *v < 0.0) {
+        return Err(Failed::fit(
+            "Sample weights must be finite and non-negative",
+        ));
+    }
+    if sample_weights.iter().sum::<f64>() <= 0.0 {
+        return Err(Failed::fit("Sum of sample weights must be positive"));
+    }
+    Ok(())
+}
