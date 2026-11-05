@@ -743,14 +743,13 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
         if visitor.start_idx == visitor.end_idx {
             return;
         }
-        /*let first_elem = workspace.columns[j][visitor.start_idx];
-        let min_val = visitor.x.get((first_elem.row(), j));
-        let last_elem = workspace.columns[j][visitor.end_idx - 1];
-        let max_val = visitor.x.get((last_elem.row(), j));*/
+
+        let col = visitor.x.get_col(j);
+
         let mut min_val = TX::max_value();
         let mut max_val = TX::min_value();
         for e in &workspace.columns[0][visitor.start_idx..visitor.end_idx] {
-            let val = *visitor.x.get((e.row(), j));
+            let val = *col.get(e.row());
             if val < min_val {
                 min_val = val;
             }
@@ -775,7 +774,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
         criterion.reset(true_stats);
 
         for elem in &workspace.columns[0][visitor.start_idx..visitor.end_idx] {
-            if visitor.x.get((elem.row(), j)).to_f64().unwrap() <= split_value {
+            if col.get(elem.row()).to_f64().unwrap() <= split_value {
                 criterion.add(
                     true_stats,
                     criterion.target(*visitor.y.get(elem.row())),
