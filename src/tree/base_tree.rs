@@ -432,8 +432,10 @@ struct SplitWorkspace<E, C: Criterion> {
     true_stats: C::Stats,  // scratch stats for split functions to use
     false_stats: C::Stats,
     parent_stats: C::Stats,
-    best_split: BestSplit, // scratch space for the search in progress
-    presorted: bool,       // use presorted strategy ??
+    best_split: BestSplit,        // scratch space for the search in progress
+    presorted: bool,              // columns are sorted by feature (Splitter::Best)
+    column_values: Vec<f64>, // values of the current feature for the node, same order as columns[0][start..end]
+    node_targets: Vec<C::Target>, // targets of the current node, same order as columns[0][start..end]
 }
 
 impl<E, C> SplitWorkspace<E, C>
@@ -447,6 +449,7 @@ where
         n_features: usize,
         criterion: &C,
         presorted: bool,
+        random_buffer_len: usize,
     ) -> Self {
         Self {
             in_true_branch,
@@ -458,6 +461,8 @@ where
             parent_stats: criterion.empty_stats(),
             best_split: BestSplit::new(),
             presorted,
+            column_values: vec![0f64; random_buffer_len],
+            node_targets: Vec::with_capacity(random_buffer_len),
         }
     }
 }
@@ -626,6 +631,10 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
             x.shape().1,
             criterion,
             order.is_some(),
+            match parameters.splitter {
+                Splitter::Best => 0usize,
+                Splitter::Random => end_idx,
+            },
         );
 
         let mut base_tree = BaseTree {
@@ -713,6 +722,16 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
 
         let splitter = self.parameters().splitter;
 
+        if let Splitter::Random = splitter {
+            let elems = &workspace.columns[0][visitor.start_idx..visitor.end_idx];
+            workspace.node_targets.clear();
+            workspace.node_targets.extend(
+                elems
+                    .iter()
+                    .map(|e| criterion.target(*visitor.y.get(e.row()))),
+            );
+        }
+
         for k in 0..mtry.min(workspace.variables.len()) {
             let variable = workspace.variables[k];
             match splitter {
@@ -745,10 +764,13 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
         }
 
         let col = visitor.x.get_col(j);
+        let n_node = visitor.end_idx - visitor.start_idx;
+        let vals = &mut workspace.column_values[..n_node];
 
         let mut min_val = TX::max_value();
         let mut max_val = TX::min_value();
-        for e in &workspace.columns[0][visitor.start_idx..visitor.end_idx] {
+        let elems = &workspace.columns[0][visitor.start_idx..visitor.end_idx];
+        for (dst, e) in vals.iter_mut().zip(elems) {
             let val = *col.get(e.row());
             if val < min_val {
                 min_val = val;
@@ -756,6 +778,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
             if val > max_val {
                 max_val = val;
             }
+            *dst = val.to_f64().unwrap();
         }
 
         // Convert min_val and max_val to f64 first, so that values that are different in type TX
@@ -773,13 +796,14 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
         let true_stats = &mut workspace.true_stats;
         criterion.reset(true_stats);
 
-        for elem in &workspace.columns[0][visitor.start_idx..visitor.end_idx] {
-            if col.get(elem.row()).to_f64().unwrap() <= split_value {
-                criterion.add(
-                    true_stats,
-                    criterion.target(*visitor.y.get(elem.row())),
-                    elem.mass(),
-                );
+        let vals = &workspace.column_values[..n_node];
+        for ((elem, &v), &target) in workspace.columns[0][visitor.start_idx..visitor.end_idx]
+            .iter()
+            .zip(vals)
+            .zip(&workspace.node_targets)
+        {
+            if v <= split_value {
+                criterion.add(true_stats, target, elem.mass());
                 true_count += elem.count();
             }
         }
