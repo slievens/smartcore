@@ -1766,6 +1766,12 @@ mod tests {
         assert_eq!(std::mem::size_of::<WeightedElement>(), 16);
     }
 
+    #[test]
+    fn test_leaf_output_sizes() {
+        assert_eq!(std::mem::size_of::<Node<f64>>(), 24);
+        assert_eq!(std::mem::size_of::<Node<ClassificationOutput>>(), 24);
+    }
+
     type TestTree = BaseTree<f64, f64, DenseMatrix<f64>, Vec<f64>, f64>;
 
     /// Leaf output of `tree` for each row of `x`.
