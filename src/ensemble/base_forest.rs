@@ -4,6 +4,7 @@ use std::fmt::Debug;
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
+use crate::ensemble::max_features::MaxFeatures;
 use crate::error::{Failed, FailedError};
 use crate::linalg::basic::arrays::{Array1, Array2};
 use crate::linalg::basic::arrays::{ArrayView1, MutArrayView1};
@@ -34,7 +35,7 @@ pub struct BaseForestParameters {
     pub n_trees: usize,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Number of random sample of predictors to use as split candidates.
-    pub m: Option<usize>,
+    pub m: MaxFeatures,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Whether to keep samples used for tree generation. This is required for OOB prediction.
     pub keep_samples: bool,
@@ -127,9 +128,7 @@ impl<
             ));
         }
 
-        let mtry = parameters
-            .m
-            .unwrap_or((num_attributes as f64).sqrt().floor() as usize);
+        let mtry = parameters.m.resolve(num_attributes)?;
 
         let mut rng = get_rng_impl(parameters.seed);
         let n_trees = parameters.n_trees;
@@ -436,7 +435,7 @@ mod tests {
             min_samples_leaf: 1,
             min_samples_split: 2,
             n_trees: 5,
-            m: None,
+            m: MaxFeatures::Sqrt,
             keep_samples: true,
             seed: Some(42),
             bootstrap: true,
@@ -465,7 +464,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 2,
                 n_trees: 5,
-                m: None,
+                m: MaxFeatures::Sqrt,
                 keep_samples: false,
                 seed: Some(0),
                 bootstrap: true,
@@ -494,7 +493,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 2,
                 n_trees: 5,
-                m: None,
+                m: MaxFeatures::Sqrt,
                 keep_samples: false,
                 seed: Some(0),
                 bootstrap: true,
@@ -520,7 +519,7 @@ mod tests {
             min_samples_leaf: 1,
             min_samples_split: 2,
             n_trees: 5,
-            m: None,
+            m: MaxFeatures::Sqrt,
             keep_samples: true,
             seed: Some(42),
             bootstrap: false,
@@ -579,7 +578,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 2,
                 n_trees: 10,
-                m: None,
+                m: MaxFeatures::Sqrt,
                 keep_samples: true, // keep samples used for each tree, so we can check that they are different
                 seed: Some(42),
                 bootstrap: true, // Use bootstrapping
@@ -625,7 +624,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 2,
                 n_trees: 10,
-                m: Some(1),
+                m: MaxFeatures::Count(1),
                 keep_samples: false,
                 seed: Some(42),
                 bootstrap: false,
@@ -654,7 +653,7 @@ mod tests {
             min_samples_leaf: 1,
             min_samples_split: 2,
             n_trees: 10,
-            m: None,
+            m: MaxFeatures::Sqrt,
             keep_samples: true,
             seed: Some(42),
             bootstrap: false, // No bootstrapping
@@ -697,7 +696,7 @@ mod tests {
             min_samples_leaf: 1,
             min_samples_split: 2,
             n_trees: 500, // Use more trees than before to smooth out randomness
-            m: None,
+            m: MaxFeatures::Sqrt,
             keep_samples: true, // keep samples used for each tree, so we can check that they are different
             seed: Some(42),
             bootstrap: true, // Use bootstrapping
@@ -757,7 +756,7 @@ mod tests {
                     min_samples_leaf: 1,
                     min_samples_split: 2,
                     n_trees: 10,
-                    m: Some(1),
+                    m: MaxFeatures::Count(1),
                     keep_samples: true,
                     seed: Some(42),
                     bootstrap: true,
@@ -817,7 +816,7 @@ mod tests {
                 min_samples_leaf: 1,
                 min_samples_split: 2,
                 n_trees: 10,
-                m: Some(1),
+                m: MaxFeatures::Count(1),
                 keep_samples: false,
                 seed: Some(42),
                 bootstrap,
@@ -890,7 +889,7 @@ mod tests {
             min_samples_leaf: 1,
             min_samples_split: 2,
             n_trees: 10,
-            m: Some(1),
+            m: MaxFeatures::Count(1),
             keep_samples: false,
             seed,
             bootstrap: true,
