@@ -78,7 +78,9 @@ use crate::linalg::basic::arrays::{Array1, Array2};
 use crate::linalg::basic::matrix::DenseMatrix;
 use crate::numbers::basenum::Number;
 use crate::tree::base_tree::{BaseTree, BaseTreeParameters, Splitter, validate_sample_weights};
-use crate::tree::criterion::{ClassificationErrorCriterion, EntropyCriterion, GiniCriterion};
+use crate::tree::criterion::{
+    ClassificationErrorCriterion, ClassificationOutput, EntropyCriterion, GiniCriterion,
+};
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone)]
@@ -111,7 +113,7 @@ pub struct DecisionTreeClassifier<
     X: Array2<TX>,
     Y: Array1<TY>,
 > {
-    tree_classifier: Option<BaseTree<TX, usize, X, Vec<usize>, usize>>,
+    tree_classifier: Option<BaseTree<TX, usize, X, Vec<usize>, ClassificationOutput>>,
     num_features: Option<usize>,
     classes: Option<Vec<TY>>,
     _phantom_y: PhantomData<Y>,
@@ -504,7 +506,10 @@ impl<TX: Number + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY>>
                 let (n, _) = x.shape();
 
                 for i in 0..n {
-                    result.set(i, self.classes()[*tree.leaf_output_for_row(x, i)]);
+                    result.set(
+                        i,
+                        self.classes()[tree.leaf_output_for_row(x, i).class_index],
+                    );
                 }
 
                 Ok(result)
@@ -550,7 +555,7 @@ impl<TX: Number + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY>>
                 let mut result = DenseMatrix::<f64>::zeros(n, classes.len());
 
                 for i in 0..n {
-                    result.set((i, *tree.leaf_output_for_row(x, i)), 1.0);
+                    result.set((i, tree.leaf_output_for_row(x, i).class_index), 1.0);
                 }
 
                 Ok(result)

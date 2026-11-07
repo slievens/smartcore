@@ -62,6 +62,8 @@ pub struct BaseTree<
     parameters: Option<BaseTreeParameters>,
     depth: u16,
     root_mass: f64,
+    leaf_probabilities: Vec<f32>, // ignored by regressors
+    n_leaves: u32,
     _phantom_tx: PhantomData<TX>,
     _phantom_ty: PhantomData<TY>,
     _phantom_x: PhantomData<X>,
@@ -555,6 +557,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
         parameters: BaseTreeParameters,
     ) -> Result<BaseTree<TX, TY, X, Y, Out>, Failed> {
         let mut nodes: Vec<Node<Out>> = Vec::new();
+        let mut leaf_probabilities: Vec<f32> = vec![];
         let mut rng = get_rng_impl(parameters.seed);
 
         let mut n = 0usize;
@@ -582,7 +585,7 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
             n += c as usize;
         }
 
-        let root = Node::new_leaf(criterion.leaf_value(&root_stats));
+        let root = Node::new_leaf(criterion.leaf_value(&root_stats, 0, &mut leaf_probabilities));
         nodes.push(root);
 
         // number of distinct rows of x in this tree with a positive mass
@@ -642,6 +645,8 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
             parameters: Some(parameters),
             depth: 0u16,
             root_mass,
+            leaf_probabilities,
+            n_leaves: 1,
             _phantom_tx: PhantomData,
             _phantom_ty: PhantomData,
             _phantom_x: PhantomData,
@@ -1036,6 +1041,11 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
             return false;
         }
 
+        let parent_slot = match &self.nodes[visitor.node] {
+            Node::Leaf { output } => output.slot(),
+            Node::Inner { .. } => unreachable!("only a leaf node is split"),
+        };
+
         // Store the real (mass-weighted) impurity improvement in split_score, not the proxy.
         // false_stats is a direct sum, not parent - true: no cancellation for a small false side
         let true_child_idx = self.nodes.len();
@@ -1048,11 +1058,19 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
 
         let split_idx = visitor.start_idx + n_true;
 
+        let false_slot = self.n_leaves;
+        self.n_leaves += 1;
         // Add the child nodes to the tree
-        self.nodes
-            .push(Node::new_leaf(criterion.leaf_value(&true_stats)));
-        self.nodes
-            .push(Node::new_leaf(criterion.leaf_value(&false_stats)));
+        self.nodes.push(Node::new_leaf(criterion.leaf_value(
+            &true_stats,
+            parent_slot,
+            &mut self.leaf_probabilities,
+        )));
+        self.nodes.push(Node::new_leaf(criterion.leaf_value(
+            &false_stats,
+            false_slot,
+            &mut self.leaf_probabilities,
+        )));
 
         let child_level = visitor.level + 1;
         self.depth = u16::max(self.depth, child_level);
@@ -1173,7 +1191,7 @@ mod tests {
     use crate::linalg::basic::arrays::Array;
     use crate::linalg::basic::matrix::DenseMatrix;
     use crate::metrics::mean_absolute_error;
-    use crate::tree::criterion::MSECriterion;
+    use crate::tree::criterion::{ClassificationOutput, GiniCriterion, MSECriterion};
 
     impl<Out: Copy> Node<Out> {
         /// Index of the true child, or `None` for a leaf.
@@ -2735,5 +2753,132 @@ mod tests {
         // root + pure leaf + 7 nodes for the false subtree with 4 distinct targets
         assert_eq!(tree.nodes().len(), 9);
         assert_eq!(predict(&tree, &x), y);
+    }
+
+    type ClassTree = BaseTree<f64, usize, DenseMatrix<f64>, Vec<usize>, ClassificationOutput>;
+
+    /// Number of `Node::Leaf` entries in the tree.
+    fn leaf_count<TY: Number, Y: Array1<TY>, Out: LeafOutput>(
+        tree: &BaseTree<f64, TY, DenseMatrix<f64>, Y, Out>,
+    ) -> usize {
+        tree.nodes()
+            .iter()
+            .filter(|node| matches!(node, Node::Leaf { .. }))
+            .count()
+    }
+
+    /// Deterministic data set: 30 rows, 3 features, 3 classes, with overlap so that the
+    /// trees have many leaves of different sizes.
+    fn class_data() -> (DenseMatrix<f64>, Vec<usize>) {
+        let rows: Vec<Vec<f64>> = (0..30)
+            .map(|i| (0..3).map(|j| ((i * 7 + j * 13) % 17) as f64).collect())
+            .collect();
+        let y: Vec<usize> = (0..30).map(|i| (i * 5 + i / 4) % 3).collect();
+        (DenseMatrix::from_2d_vec(&rows).unwrap(), y)
+    }
+
+    fn slot_parameters(max_depth: Option<u16>, splitter: Splitter) -> BaseTreeParameters {
+        BaseTreeParameters {
+            max_depth,
+            min_samples_leaf: 1,
+            min_samples_split: 2,
+            seed: Some(42),
+            splitter,
+        }
+    }
+
+    #[test]
+    fn n_leaves_matches_number_of_leaf_nodes() {
+        let (x, y_class) = class_data();
+        let y_reg: Vec<f64> = y_class.iter().map(|&c| c as f64 * 1.5).collect();
+
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), Some(2), Some(4), None] {
+                let params = slot_parameters(max_depth, splitter);
+
+                let reg = BaseTree::fit_inner(&x, &y_reg, None, &MSECriterion, params.clone())
+                    .expect("Fit should work");
+                assert_eq!(reg.n_leaves as usize, leaf_count(&reg));
+                // A binary tree: number of leaves = number of inner nodes + 1
+                assert_eq!(reg.nodes().len(), 2 * reg.n_leaves as usize - 1);
+
+                let class: ClassTree =
+                    BaseTree::fit_inner(&x, &y_class, None, &GiniCriterion::new(3), params)
+                        .expect("Fit should work");
+                assert_eq!(class.n_leaves as usize, leaf_count(&class));
+                assert_eq!(class.nodes().len(), 2 * class.n_leaves as usize - 1);
+            }
+        }
+    }
+
+    #[test]
+    fn n_leaves_is_one_for_root_only_tree() {
+        let (x, y) = class_data();
+        let tree: ClassTree = BaseTree::fit_inner(
+            &x,
+            &y,
+            None,
+            &GiniCriterion::new(3),
+            slot_parameters(Some(1), Splitter::Best),
+        )
+        .expect("Fit should work");
+        assert_eq!(tree.n_leaves, 1);
+        assert_eq!(tree.leaf_probabilities.len(), 3);
+    }
+
+    #[test]
+    fn regression_tree_has_no_leaf_probabilities() {
+        let (x, y_class) = class_data();
+        let y: Vec<f64> = y_class.iter().map(|&c| c as f64).collect();
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), None] {
+                let tree = BaseTree::fit_inner(
+                    &x,
+                    &y,
+                    None,
+                    &MSECriterion,
+                    slot_parameters(max_depth, splitter),
+                )
+                .expect("Fit should work");
+                // the deep tree must really have split, else the test is trivial
+                assert!(tree.n_leaves > 1 || max_depth == Some(1));
+                assert!(tree.leaf_probabilities.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn classification_leaf_probabilities_have_one_row_per_leaf() {
+        let (x, y) = class_data();
+        let n_classes = 3;
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), Some(2), Some(4), None] {
+                let tree: ClassTree = BaseTree::fit_inner(
+                    &x,
+                    &y,
+                    None,
+                    &GiniCriterion::new(n_classes),
+                    slot_parameters(max_depth, splitter),
+                )
+                .expect("Fit should work");
+
+                assert_eq!(
+                    tree.leaf_probabilities.len(),
+                    tree.n_leaves as usize * n_classes
+                );
+
+                // The slots of the leaves are exactly 0..n_leaves (no gaps, no duplicates)
+                let mut slots: Vec<u32> = tree
+                    .nodes()
+                    .iter()
+                    .filter_map(|node| match node {
+                        Node::Leaf { output } => Some(output.slot),
+                        Node::Inner { .. } => None,
+                    })
+                    .collect();
+                slots.sort_unstable();
+                assert_eq!(slots, (0..tree.n_leaves).collect::<Vec<u32>>());
+            }
+        }
     }
 }

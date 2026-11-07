@@ -9,6 +9,8 @@
 
 use crate::linalg::basic::arrays::ArrayView1;
 use crate::numbers::basenum::Number;
+#[cfg(feature = "serde")]
+use serde::{Deserialize, Serialize};
 use std::fmt::Debug;
 
 /// Impurity measure that a tree uses to select splits.
@@ -46,7 +48,7 @@ pub(crate) trait Criterion {
     ) -> f64;
 
     /// Value of a leaf that contains the samples of `stats`.
-    fn leaf_value(&self, stats: &Self::Stats) -> Self::Output;
+    fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output;
 
     /// Convert a target value of the training data to the target of this criterion.
     fn target<T: Number>(&self, y: T) -> Self::Target;
@@ -55,17 +57,27 @@ pub(crate) trait Criterion {
 /// Value in a leaf of a tree.
 pub(crate) trait LeafOutput: Clone + Debug {
     fn approximate_eq(&self, other: &Self) -> bool;
+
+    fn slot(&self) -> u32;
 }
 
 impl LeafOutput for f64 {
     fn approximate_eq(&self, other: &f64) -> bool {
         (self - other).abs() < f64::EPSILON
     }
+
+    fn slot(&self) -> u32 {
+        0
+    }
 }
 
 impl LeafOutput for usize {
     fn approximate_eq(&self, other: &usize) -> bool {
         self == other
+    }
+
+    fn slot(&self) -> u32 {
+        0
     }
 }
 
@@ -131,7 +143,7 @@ impl Criterion for MSECriterion {
         (d * d) / (true_side.mass * false_side.mass * parent.mass)
     }
 
-    fn leaf_value(&self, stats: &Self::Stats) -> Self::Output {
+    fn leaf_value(&self, stats: &Self::Stats, _slot: u32, _store: &mut Vec<f32>) -> Self::Output {
         if stats.mass > 0.0 {
             stats.sum / stats.mass
         } else {
@@ -180,6 +192,19 @@ impl ClassStats {
         }
         out.mass = self.mass - part.mass;
     }
+
+    /// Write the class distribution of these samples to `out`.
+    /// `out.len()` must equal the number of classes.
+    fn write_distribution(&self, out: &mut [f32]) {
+        debug_assert_eq!(out.len(), self.class_counts.len());
+        if self.mass > 0.0 {
+            for (o, &c) in out.iter_mut().zip(self.class_counts.iter()) {
+                *o = (c / self.mass) as f32;
+            }
+        } else {
+            out.fill(0.0); // a leaf with no weight: no NaN
+        }
+    }
 }
 
 pub(crate) struct GiniCriterion {
@@ -201,10 +226,27 @@ impl GiniCriterion {
     }
 }
 
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct ClassificationOutput {
+    pub class_index: usize,
+    pub slot: u32,
+}
+
+impl LeafOutput for ClassificationOutput {
+    fn approximate_eq(&self, other: &Self) -> bool {
+        self.class_index == other.class_index && self.slot == other.slot
+    }
+
+    fn slot(&self) -> u32 {
+        self.slot
+    }
+}
+
 impl Criterion for GiniCriterion {
     type Stats = ClassStats;
     type Target = usize;
-    type Output = usize;
+    type Output = ClassificationOutput;
 
     fn empty_stats(&self) -> Self::Stats {
         ClassStats::empty_stats(self.num_classes)
@@ -253,8 +295,19 @@ impl Criterion for GiniCriterion {
         s / (true_side.mass * false_side.mass * parent.mass)
     }
 
-    fn leaf_value(&self, stats: &Self::Stats) -> Self::Output {
-        stats.class_counts.argmax()
+    fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
+        let n = self.num_classes;
+        let start = slot as usize * n;
+        debug_assert!(start <= store.len());
+        if start == store.len() {
+            store.resize(start + n, 0.0); // new slot (false child or root): append one row
+        }
+        stats.write_distribution(&mut store[start..start + n]);
+
+        ClassificationOutput {
+            class_index: stats.class_counts.argmax(),
+            slot,
+        }
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -303,7 +356,7 @@ impl EntropyCriterion {
 impl Criterion for EntropyCriterion {
     type Stats = ClassStats;
     type Target = usize;
-    type Output = usize;
+    type Output = ClassificationOutput;
 
     fn empty_stats(&self) -> Self::Stats {
         ClassStats::empty_stats(self.num_classes)
@@ -356,8 +409,19 @@ impl Criterion for EntropyCriterion {
         s / std::f64::consts::LN_2 // convert to log base 2 from ln
     }
 
-    fn leaf_value(&self, stats: &Self::Stats) -> Self::Output {
-        stats.class_counts.argmax()
+    fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
+        let n = self.num_classes;
+        let start = slot as usize * n;
+        debug_assert!(start <= store.len());
+        if start == store.len() {
+            store.resize(start + n, 0.0); // new slot (false child or root): append one row
+        }
+        stats.write_distribution(&mut store[start..start + n]);
+
+        ClassificationOutput {
+            class_index: stats.class_counts.argmax(),
+            slot,
+        }
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -382,7 +446,7 @@ impl ClassificationErrorCriterion {
 impl Criterion for ClassificationErrorCriterion {
     type Stats = ClassStats;
     type Target = usize;
-    type Output = usize;
+    type Output = ClassificationOutput;
 
     fn empty_stats(&self) -> Self::Stats {
         ClassStats::empty_stats(self.num_classes)
@@ -428,8 +492,19 @@ impl Criterion for ClassificationErrorCriterion {
         (Self::term(true_side) + Self::term(false_side) - parent_max).max(0.0)
     }
 
-    fn leaf_value(&self, stats: &Self::Stats) -> Self::Output {
-        stats.class_counts.argmax()
+    fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
+        let n = self.num_classes;
+        let start = slot as usize * n;
+        debug_assert!(start <= store.len());
+        if start == store.len() {
+            store.resize(start + n, 0.0); // new slot (false child or root): append one row
+        }
+        stats.write_distribution(&mut store[start..start + n]);
+
+        ClassificationOutput {
+            class_index: stats.class_counts.argmax(),
+            slot,
+        }
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -464,7 +539,7 @@ mod tests {
         let empty = criterion.empty_stats();
         assert_eq!(empty.sum, 0.0);
         assert_eq!(empty.mass, 0.0);
-        assert_eq!(criterion.leaf_value(&empty), 0.0);
+        assert_eq!(criterion.leaf_value(&empty, 0, &mut vec![]), 0.0);
         assert_eq!(criterion.proxy_improvement(&empty, &empty), 0.0);
     }
 
@@ -474,7 +549,7 @@ mod tests {
         let stats = mse_stats(&[(1.0, 1.0), (3.0, 1.0), (5.0, 2.0)]);
         assert_eq!(stats.mass, 4.0);
         assert_eq!(stats.sum, 14.0);
-        assert!((criterion.leaf_value(&stats) - 3.5).abs() < EPS);
+        assert!((criterion.leaf_value(&stats, 0, &mut vec![]) - 3.5).abs() < EPS);
     }
 
     #[test]
@@ -751,7 +826,14 @@ mod tests {
         let empty = criterion.empty_stats();
         assert_eq!(empty.class_counts, vec![0.0; 3]);
         assert_eq!(empty.mass, 0.0);
-        assert_eq!(criterion.leaf_value(&empty), 0);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&empty, 0, &mut store),
+            ClassificationOutput {
+                class_index: 0,
+                slot: 0
+            }
+        );
         assert_eq!(criterion.proxy_improvement(&empty, &empty), 0.0);
     }
 
@@ -825,11 +907,24 @@ mod tests {
     fn gini_leaf_value() {
         let criterion = GiniCriterion { num_classes: 3 };
         let stats = class_stats(3, &[(0, 1.0), (1, 5.0), (2, 2.0)]);
-        assert_eq!(criterion.leaf_value(&stats), 1);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&stats, 0, &mut store),
+            ClassificationOutput {
+                class_index: 1,
+                slot: 0
+            }
+        );
 
         // A tie gives the first class, same as `which_max`
         let tie = class_stats(3, &[(0, 3.0), (1, 3.0)]);
-        assert_eq!(criterion.leaf_value(&tie), 0);
+        assert_eq!(
+            criterion.leaf_value(&tie, 0, &mut store),
+            ClassificationOutput {
+                class_index: 0,
+                slot: 0
+            }
+        );
     }
 
     #[test]
@@ -951,7 +1046,14 @@ mod tests {
         let empty = criterion.empty_stats();
         assert_eq!(empty.class_counts, vec![0.0; 3]);
         assert_eq!(empty.mass, 0.0);
-        assert_eq!(criterion.leaf_value(&empty), 0);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&empty, 0, &mut store),
+            ClassificationOutput {
+                class_index: 0,
+                slot: 0
+            }
+        );
         assert_eq!(criterion.proxy_improvement(&empty, &empty), 0.0);
     }
 
@@ -1010,7 +1112,14 @@ mod tests {
     fn entropy_leaf_value() {
         let criterion = EntropyCriterion { num_classes: 3 };
         let stats = class_stats(3, &[(0, 1.0), (1, 5.0), (2, 2.0)]);
-        assert_eq!(criterion.leaf_value(&stats), 1);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&stats, 0, &mut store),
+            ClassificationOutput {
+                class_index: 1,
+                slot: 0
+            }
+        );
     }
 
     #[test]
@@ -1183,7 +1292,14 @@ mod tests {
         let empty = criterion.empty_stats();
         assert_eq!(empty.class_counts, vec![0.0; 3]);
         assert_eq!(empty.mass, 0.0);
-        assert_eq!(criterion.leaf_value(&empty), 0);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&empty, 0, &mut store),
+            ClassificationOutput {
+                class_index: 0,
+                slot: 0
+            }
+        );
         assert_eq!(criterion.proxy_improvement(&empty, &empty), 0.0);
     }
 
@@ -1229,7 +1345,14 @@ mod tests {
     fn classification_error_leaf_value() {
         let criterion = ClassificationErrorCriterion { num_classes: 3 };
         let stats = class_stats(3, &[(0, 1.0), (1, 5.0), (2, 2.0)]);
-        assert_eq!(criterion.leaf_value(&stats), 1);
+        let mut store = vec![];
+        assert_eq!(
+            criterion.leaf_value(&stats, 0, &mut store),
+            ClassificationOutput {
+                class_index: 1,
+                slot: 0
+            }
+        );
     }
 
     #[test]
