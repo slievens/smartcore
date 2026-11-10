@@ -12,7 +12,7 @@ use crate::error::{Failed, FailedError};
 use crate::linalg::basic::arrays::{Array1, Array2, MutArrayView1};
 use crate::numbers::basenum::Number;
 use crate::rand_custom::get_rng_impl;
-use crate::tree::criterion::{Criterion, LeafOutput};
+use crate::tree::criterion::{ClassificationOutput, Criterion, LeafOutput};
 
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 #[derive(Debug, Clone, Copy, Default)]
@@ -1204,10 +1204,22 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
     }
 }
 
+impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>>
+    BaseTree<TX, TY, X, Y, ClassificationOutput>
+{
+    /// Class distribution of the leaf that row of x reaches; one entry per class, sums to 1.
+    pub(crate) fn leaf_distribution_for_row(&self, x: &X, row: usize) -> &[f32] {
+        let leaf_output = self.leaf_output_for_row(x, row);
+        let slot = leaf_output.slot as usize;
+        let n_classes = self.leaf_probabilities.len() / self.n_leaves as usize;
+        &self.leaf_probabilities[slot * n_classes..(slot + 1) * n_classes]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::linalg::basic::arrays::Array;
+    use crate::linalg::basic::arrays::{Array, ArrayView1};
     use crate::linalg::basic::matrix::DenseMatrix;
     use crate::metrics::mean_absolute_error;
     use crate::tree::criterion::{ClassificationOutput, GiniCriterion, MSECriterion};
@@ -2915,6 +2927,113 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn slot_row_sum_to_one() {
+        let (x, y) = class_data();
+        let n_classes = 3;
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), Some(2), Some(4), None] {
+                let tree: ClassTree = BaseTree::fit_inner(
+                    &x,
+                    &y,
+                    None,
+                    &GiniCriterion::new(n_classes),
+                    slot_parameters(max_depth, splitter),
+                )
+                .expect("Fit should work");
+
+                for dist in tree.leaf_probabilities.chunks(n_classes) {
+                    assert_eq!(
+                        dist.len(),
+                        n_classes,
+                        "splitter: {splitter:?}, max_depth: {max_depth:?}"
+                    ); // all chunks exactly the right size
+                    assert!(
+                        (dist.iter().map(|p| *p as f64).sum::<f64>() - 1.0).abs()
+                            < f32::EPSILON as f64,
+                        "splitter: {splitter:?}, max_depth: {max_depth:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn class_prediction_equals_argmax() {
+        let (x, y) = class_data();
+        let n_classes = 3;
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), Some(2), Some(4), None] {
+                let tree: ClassTree = BaseTree::fit_inner(
+                    &x,
+                    &y,
+                    None,
+                    &GiniCriterion::new(n_classes),
+                    slot_parameters(max_depth, splitter),
+                )
+                .expect("Fit should work");
+
+                for node in tree.nodes() {
+                    if let Node::Leaf { output } = node {
+                        let slot = output.slot as usize;
+                        let probs =
+                            &tree.leaf_probabilities[slot * n_classes..(slot + 1) * n_classes];
+                        assert_eq!(
+                            output.class_index,
+                            probs.argmax(),
+                            "splitter: {splitter:?}, max_depth: {max_depth:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn leaf_probabilities_are_weighted_class_frequencies() {
+        let (x, y) = class_data();
+        let n_classes = 3;
+        let sample_weights: Vec<f64> = (0..y.len()).map(|i| (i % 5 + 1) as f64).collect();
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for max_depth in [Some(1), Some(2), Some(4), None] {
+                let tree: ClassTree = BaseTree::fit_inner(
+                    &x,
+                    &y,
+                    Some(&sample_weights),
+                    &GiniCriterion::new(n_classes),
+                    slot_parameters(max_depth, splitter),
+                )
+                .expect("Fit should work");
+
+                // Expected: weighted class counts of the training rows that reach each leaf
+                let n_leaves = tree.n_leaves as usize;
+                let mut counts = vec![0f64; n_leaves * n_classes];
+                for (row, (&yi, &wi)) in y.iter().zip(&sample_weights).enumerate() {
+                    let slot = tree.leaf_output_for_row(&x, row).slot as usize;
+                    counts[slot * n_classes + yi] += wi;
+                }
+
+                for (slot, (got, exp)) in tree
+                    .leaf_probabilities
+                    .chunks(n_classes)
+                    .zip(counts.chunks(n_classes))
+                    .enumerate()
+                {
+                    let mass: f64 = exp.iter().sum();
+                    for c in 0..n_classes {
+                        let expected = exp[c] / mass;
+                        assert!(
+                            (got[c] as f64 - expected).abs() < f32::EPSILON as f64,
+                            "{splitter:?}, {max_depth:?}, slot {slot}, class {c}: {} vs {expected}",
+                            got[c]
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     /// Run `unstable_partition` on `elems` and check the result:
     /// the true elements come first, each target stays with its element,
     /// and no element is lost or changed.

@@ -73,7 +73,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::api::{Predictor, SupervisedEstimator};
 use crate::error::Failed;
-use crate::linalg::basic::arrays::MutArray;
 use crate::linalg::basic::arrays::{Array1, Array2};
 use crate::linalg::basic::matrix::DenseMatrix;
 use crate::numbers::basenum::Number;
@@ -552,13 +551,18 @@ impl<TX: Number + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY>>
         match (&self.tree_classifier, &self.classes) {
             (Some(tree), Some(classes)) => {
                 let (n, _) = x.shape();
-                let mut result = DenseMatrix::<f64>::zeros(n, classes.len());
+                let k = classes.len();
+                let mut values = Vec::with_capacity(n * k);
 
                 for i in 0..n {
-                    result.set((i, tree.leaf_output_for_row(x, i).class_index), 1.0);
+                    values.extend(
+                        tree.leaf_distribution_for_row(x, i)
+                            .iter()
+                            .map(|&p| p as f64),
+                    );
                 }
 
-                Ok(result)
+                DenseMatrix::new(n, k, values, false)
             }
             _ => Err(Failed::predict(
                 "'fit' should be called before calling 'predict_proba'",
@@ -1252,5 +1256,24 @@ mod tests {
         assert_eq!(DecisionTreeClassifierParameters::default().seed, None);
         let params = DecisionTreeClassifierParameters::default().with_seed(42);
         assert_eq!(params.seed, Some(42));
+    }
+
+    #[test]
+    fn predict_proba_of_root_only_tree_is_class_frequencies() {
+        let x = DenseMatrix::from_2d_array(&[&[0.0], &[1.0], &[2.0], &[3.0]]).unwrap();
+        let y: Vec<u32> = vec![0, 0, 0, 1];
+        let tree = DecisionTreeClassifier::fit(
+            &x,
+            &y,
+            DecisionTreeClassifierParameters::default()
+                .with_max_depth(1)
+                .with_seed(42),
+        )
+        .unwrap();
+        let p = tree.predict_proba(&x).unwrap();
+        for row in 0..4 {
+            assert_eq!(*p.get((row, 0)), 0.75);
+            assert_eq!(*p.get((row, 1)), 0.25);
+        }
     }
 }

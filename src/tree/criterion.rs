@@ -202,7 +202,7 @@ impl ClassStats {
                 *o = (c / self.mass) as f32;
             }
         } else {
-            out.fill(0.0); // a leaf with no weight: no NaN
+            out.fill(1.0 / out.len() as f32); // uniform distribution
         }
     }
 }
