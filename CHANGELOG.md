@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tree`: `with_seed` on `DecisionTreeRegressorParameters` and `DecisionTreeClassifierParameters`.
 - `ensemble`: `ExtraTreesRegressorParameters` gets a `bootstrap` field and a `with_bootstrap` method. The default is `false`, so each tree still uses the whole dataset.
 - `ensemble`: `ExtraTreesClassifier` added with an API very similar to `ExtraTreesRegressor`
+- `ensemble`: `MaxFeatures` enum (`Sqrt`, `Fraction`, `Count`, `All`) sets the number of features to test at each split in the forest estimators.
 
 ### Fixed
 - `ensemble`: `ExtraTreesRegressor::predict_oob` returns an error when the forest was fitted without bootstrap. Before this change, it returned `NaN` for a float target and panicked for an integer target (#520).
@@ -31,8 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ensemble`: each forest uses one RNG for bootstrap sampling and for the tree seeds (before: `seed + tree_idx`). Results for a given seed differ from earlier versions.
 - **Breaking change:** `ensemble`: `ExtraTreesRegressorParameters` gets a public `bootstrap` field. Struct literals without `..Default::default()` must add `bootstrap: false` to keep the earlier behavior. Serialized parameters without this field still deserialize, with `bootstrap = false` (#520).
 - `ensemble`: Extra trees do not sort the feature columns. Trees are not bit-identical to the old ones because of different summation order.
+- **Breaking change:** `ensemble`: `m` on the four forest parameter structs is now `MaxFeatures` (was `Option<usize>`). `with_m(3)` still works. `fit` returns an error when `m` is not valid for the data. Parameters serialized with an earlier version that contain `m` no longer deserialize.
 - **Breaking change:** `tree`, `ensemble`: the fitted trees store the number of leaves and, for classification, the class distribution of each leaf. Decision trees, random forests and extra trees serialized with an earlier version cannot be deserialized. Fit these models again.
 - `tree`: `DecisionTreeClassifier::predict_proba` returns the weighted class frequencies of the training samples in the leaf. Before this change, it returned 1 for the predicted class and 0 for the other classes.
+ 
 
 ## [0.7.0] - 2026-10-26
 ### Added

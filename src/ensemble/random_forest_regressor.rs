@@ -80,7 +80,7 @@ pub struct RandomForestRegressorParameters {
     /// The number of trees in the forest.
     pub n_trees: usize,
     #[cfg_attr(feature = "serde", serde(default))]
-    /// Number of random sample of predictors to use as split candidates.
+    /// Number of features to test at each split. See [`MaxFeatures`].
     pub m: MaxFeatures,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Whether to keep samples used for tree generation. This is required for OOB prediction.

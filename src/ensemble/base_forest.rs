@@ -34,7 +34,7 @@ pub struct BaseForestParameters {
     /// The number of trees in the forest.
     pub n_trees: usize,
     #[cfg_attr(feature = "serde", serde(default))]
-    /// Number of random sample of predictors to use as split candidates.
+    /// Number of features to test at each split. See [`MaxFeatures`].
     pub m: MaxFeatures,
     #[cfg_attr(feature = "serde", serde(default))]
     /// Whether to keep samples used for tree generation. This is required for OOB prediction.
@@ -938,5 +938,100 @@ mod tests {
             first != second,
             "two fits with seed None give the same forest"
         );
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_returns_error_for_invalid_max_features() {
+        let n_rows = 10;
+        let n_features = 4;
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator(
+            (0..n_features * n_rows).map(|k| ((k * 7919) % 101) as f64),
+            n_rows,
+            n_features,
+            0,
+        );
+        let y: Vec<f64> = (0..n_rows).map(|i| i as f64).collect();
+
+        let invalid = [
+            MaxFeatures::Count(0),
+            MaxFeatures::Count(n_features + 1),
+            MaxFeatures::Fraction(0.0),
+            MaxFeatures::Fraction(-0.5),
+            MaxFeatures::Fraction(1.5),
+            MaxFeatures::Fraction(f64::NAN),
+            MaxFeatures::Fraction(f64::INFINITY),
+        ];
+
+        for splitter in [Splitter::Best, Splitter::Random] {
+            for m in invalid {
+                let params = BaseForestParameters {
+                    max_depth: None,
+                    min_samples_leaf: 1,
+                    min_samples_split: 2,
+                    n_trees: 3,
+                    m,
+                    keep_samples: false,
+                    seed: Some(42),
+                    bootstrap: true,
+                    splitter,
+                };
+                let result = BaseForest::fit(&x, &y, None, &MSECriterion, params);
+                let err = result.err().unwrap_or_else(|| {
+                    panic!("fit must fail for m = {m:?} (splitter: {splitter:?})")
+                });
+                assert_eq!(
+                    err.error(),
+                    FailedError::ParametersError,
+                    "m = {m:?} (splitter: {splitter:?})"
+                );
+            }
+        }
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn fit_accepts_boundary_max_features() {
+        let n_rows = 10;
+        let n_features = 4;
+        let x: DenseMatrix<f64> = DenseMatrix::from_iterator(
+            (0..n_features * n_rows).map(|k| ((k * 7919) % 101) as f64),
+            n_rows,
+            n_features,
+            0,
+        );
+        let y: Vec<f64> = (0..n_rows).map(|i| i as f64).collect();
+
+        let valid = [
+            MaxFeatures::Sqrt,
+            MaxFeatures::All,
+            MaxFeatures::Count(1),
+            MaxFeatures::Count(n_features),
+            MaxFeatures::Fraction(1.0),
+            MaxFeatures::Fraction(0.01),
+        ];
+
+        for m in valid {
+            let params = BaseForestParameters {
+                max_depth: None,
+                min_samples_leaf: 1,
+                min_samples_split: 2,
+                n_trees: 3,
+                m,
+                keep_samples: false,
+                seed: Some(42),
+                bootstrap: true,
+                splitter: Splitter::Best,
+            };
+            let forest = BaseForest::fit(&x, &y, None, &MSECriterion, params)
+                .unwrap_or_else(|e| panic!("fit must succeed for m = {m:?}: {e}"));
+            assert_eq!(forest.trees.unwrap().len(), 3, "m = {m:?}");
+        }
     }
 }
