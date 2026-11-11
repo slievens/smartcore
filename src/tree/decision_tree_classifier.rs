@@ -1264,6 +1264,10 @@ mod tests {
         assert_eq!(params.seed, Some(42));
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn predict_proba_of_root_only_tree_is_class_frequencies() {
         let x = DenseMatrix::from_2d_array(&[&[0.0], &[1.0], &[2.0], &[3.0]]).unwrap();

@@ -1806,6 +1806,10 @@ mod tests {
         assert_eq!(std::mem::size_of::<WeightedElement>(), 16);
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn test_leaf_output_sizes() {
         assert_eq!(std::mem::size_of::<Node<f64>>(), 24);
@@ -2842,6 +2846,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn n_leaves_matches_number_of_leaf_nodes() {
         let (x, y_class) = class_data();
@@ -2866,6 +2874,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn n_leaves_is_one_for_root_only_tree() {
         let (x, y) = class_data();
@@ -2881,6 +2893,10 @@ mod tests {
         assert_eq!(tree.leaf_probabilities.len(), 3);
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn regression_tree_has_no_leaf_probabilities() {
         let (x, y_class) = class_data();
@@ -2902,6 +2918,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn classification_leaf_probabilities_have_one_row_per_leaf() {
         let (x, y) = class_data();
@@ -2937,6 +2957,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn slot_row_sum_to_one() {
         let (x, y) = class_data();
@@ -2968,6 +2992,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn class_prediction_equals_argmax() {
         let (x, y) = class_data();
@@ -2999,6 +3027,10 @@ mod tests {
         }
     }
 
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
     #[test]
     fn leaf_probabilities_are_weighted_class_frequencies() {
         let (x, y) = class_data();
