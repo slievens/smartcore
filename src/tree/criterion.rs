@@ -48,6 +48,8 @@ pub(crate) trait Criterion {
     ) -> f64;
 
     /// Value of a leaf that contains the samples of `stats`.
+    /// Classification criteria also write the class distribution in row `slot` of `store`.
+    /// Regression criteria ignore `slot` and `store`.
     fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output;
 
     /// Convert a target value of the training data to the target of this criterion.
@@ -64,16 +66,6 @@ pub(crate) trait LeafOutput: Clone + Debug {
 impl LeafOutput for f64 {
     fn approximate_eq(&self, other: &f64) -> bool {
         (self - other).abs() < f64::EPSILON
-    }
-
-    fn slot(&self) -> u32 {
-        0
-    }
-}
-
-impl LeafOutput for usize {
-    fn approximate_eq(&self, other: &usize) -> bool {
-        self == other
     }
 
     fn slot(&self) -> u32 {

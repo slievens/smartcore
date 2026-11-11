@@ -62,7 +62,7 @@ pub struct BaseTree<
     parameters: Option<BaseTreeParameters>,
     depth: u16,
     root_mass: f64,
-    leaf_probabilities: Vec<f32>, // ignored by regressors
+    leaf_probabilities: Vec<f32>, // empty for regressors
     n_leaves: u32,
     _phantom_tx: PhantomData<TX>,
     _phantom_ty: PhantomData<TY>,
@@ -169,13 +169,22 @@ impl<TX: Number + PartialOrd, TY: Number, X: Array2<TX>, Y: Array1<TY>, Out: Lea
     for BaseTree<TX, TY, X, Y, Out>
 {
     fn eq(&self, other: &Self) -> bool {
-        if self.depth != other.depth || self.nodes.len() != other.nodes.len() {
+        if self.depth != other.depth
+            || self.nodes.len() != other.nodes.len()
+            || self.n_leaves != other.n_leaves
+            || self.leaf_probabilities.len() != other.leaf_probabilities.len()
+        {
             false
         } else {
             self.nodes
                 .iter()
                 .zip(other.nodes().iter())
                 .all(|(a, b)| a.approximate_eq(b))
+                && self
+                    .leaf_probabilities
+                    .iter()
+                    .zip(other.leaf_probabilities.iter())
+                    .all(|(&p1, &p2)| (p1 - p2).abs() < f32::EPSILON)
         }
     }
 }
@@ -3313,5 +3322,34 @@ mod tests {
             }
             assert!(n_split > 0, "{name}: no seed gives a split");
         }
+    }
+
+    #[test]
+    #[cfg(feature = "serde")]
+    fn serde_round_trip_keeps_leaf_probabilities() {
+        let (x, y) = class_data();
+        let tree: ClassTree = BaseTree::fit_inner(
+            &x,
+            &y,
+            None,
+            &GiniCriterion::new(3),
+            slot_parameters(Some(2), Splitter::Best),
+        )
+        .expect("Fit should work");
+        // the tree must really have split, else the test is trivial
+        assert!(tree.n_leaves > 1);
+        // a shallow tree has impure leaves, so not all probabilities are 0 or 1
+        assert!(tree.leaf_probabilities.iter().any(|&p| p > 0.0 && p < 1.0));
+
+        let bytes = postcard::to_allocvec(&tree).unwrap();
+        let deserialized: ClassTree = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(tree, deserialized);
+        assert_eq!(tree.n_leaves, deserialized.n_leaves);
+        assert_eq!(tree.leaf_probabilities, deserialized.leaf_probabilities);
+
+        // Equality must detect a different leaf distribution, also when the nodes are the same
+        let mut changed: ClassTree = postcard::from_bytes(&bytes).unwrap();
+        changed.leaf_probabilities[0] += 0.5;
+        assert_ne!(tree, changed);
     }
 }

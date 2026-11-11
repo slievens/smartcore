@@ -1001,6 +1001,12 @@ mod tests {
             postcard::from_bytes(&postcard::to_allocvec(&tree).unwrap()).unwrap();
 
         assert_eq!(tree, deserialized_tree);
+
+        let preds_before = tree.predict_proba(&x).expect("predict_proba should work");
+        let preds_after = deserialized_tree
+            .predict_proba(&x)
+            .expect("predict_proba should work");
+        assert_eq!(preds_before, preds_after);
     }
 
     #[cfg_attr(
