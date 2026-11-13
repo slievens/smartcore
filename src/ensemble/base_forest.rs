@@ -281,13 +281,15 @@ where
     let mut result = Y::zeros(n);
     let num_trees = TY::from_usize(forest.trees().len()).unwrap();
 
-    for row in 0..n {
-        let mut sum = TY::zero();
-        for tree in forest.trees() {
-            sum += TY::from_f64(*tree.leaf_output_for_row(x, row)).unwrap();
+    for tree in forest.trees() {
+        for row in 0..n {
+            result.add_element_mut(
+                row,
+                TY::from_f64(*tree.leaf_output_for_row(x, row)).unwrap(),
+            );
         }
-        result.set(row, sum / num_trees);
     }
+    result.div_scalar_mut(num_trees);
     Ok(result)
 }
 
