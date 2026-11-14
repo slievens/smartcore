@@ -62,7 +62,8 @@ pub struct BaseTree<
     parameters: Option<BaseTreeParameters>,
     depth: u16,
     root_mass: f64,
-    leaf_probabilities: Vec<f32>, // empty for regressors
+    /// empty for regressors
+    leaf_probabilities: Vec<f32>,
     n_leaves: u32,
     _phantom_tx: PhantomData<TX>,
     _phantom_ty: PhantomData<TY>,
@@ -2965,7 +2966,7 @@ mod tests {
         wasm_bindgen_test::wasm_bindgen_test
     )]
     #[test]
-    fn slot_row_sum_to_one() {
+    fn slot_rows_sum_to_one() {
         let (x, y) = class_data();
         let n_classes = 3;
         for splitter in [Splitter::Best, Splitter::Random] {
@@ -2984,7 +2985,7 @@ mod tests {
                         dist.len(),
                         n_classes,
                         "splitter: {splitter:?}, max_depth: {max_depth:?}"
-                    ); // all chunks exactly the right size
+                    );
                     assert!(
                         (dist.iter().map(|p| *p as f64).sum::<f64>() - 1.0).abs()
                             < f32::EPSILON as f64,
@@ -3104,8 +3105,8 @@ mod tests {
 
         // the same elements (row, count, mass) as before
         let key = |e: &E| (e.row(), e.count(), e.mass().to_bits());
-        let mut before: Vec<_> = elems.iter().map(|e| key(e)).collect();
-        let mut after: Vec<_> = slice.iter().map(|e| key(e)).collect();
+        let mut before: Vec<_> = elems.iter().map(&key).collect();
+        let mut after: Vec<_> = slice.iter().map(&key).collect();
         before.sort_unstable();
         after.sort_unstable();
         assert_eq!(before, after);

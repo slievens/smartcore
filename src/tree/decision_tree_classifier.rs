@@ -543,6 +543,8 @@ impl<TX: Number + PartialOrd, TY: Number + Ord, X: Array2<TX>, Y: Array1<TY>>
     ///
     /// A `Result` containing a `DenseMatrix<f64>` where each row corresponds to a sample and each column
     /// corresponds to a class. The values represent the probability of the sample belonging to each class.
+    /// These values are the weighted class frequencies of the samples in the leaves and sum to one
+    /// within f32 precision.
     ///
     /// # Errors
     ///
@@ -1284,6 +1286,72 @@ mod tests {
         for row in 0..4 {
             assert_eq!(*p.get((row, 0)), 0.75);
             assert_eq!(*p.get((row, 1)), 0.25);
+        }
+    }
+
+    #[cfg_attr(
+        all(target_arch = "wasm32", not(target_os = "wasi")),
+        wasm_bindgen_test::wasm_bindgen_test
+    )]
+    #[test]
+    fn predict_proba_uses_leaf_distribution_for_all_criteria() {
+        // One threshold cannot separate the classes, so a tree with one split has an impure leaf
+        let x = DenseMatrix::from_2d_array(&[
+            &[0.0],
+            &[1.0],
+            &[2.0],
+            &[3.0],
+            &[4.0],
+            &[5.0],
+            &[6.0],
+            &[7.0],
+        ])
+        .unwrap();
+        let y: Vec<u32> = vec![0, 0, 0, 1, 0, 1, 1, 1];
+
+        for criterion in [
+            SplitCriterion::Gini,
+            SplitCriterion::Entropy,
+            SplitCriterion::ClassificationError,
+        ] {
+            // Root-only tree: every row gets the class frequencies of the training data
+            let root_only = DecisionTreeClassifier::fit(
+                &x,
+                &y,
+                DecisionTreeClassifierParameters::default()
+                    .with_criterion(criterion.clone())
+                    .with_max_depth(1)
+                    .with_seed(42),
+            )
+            .unwrap();
+            let p = root_only.predict_proba(&x).unwrap();
+            for row in 0..8 {
+                assert_eq!(*p.get((row, 0)), 0.5, "{criterion:?}");
+                assert_eq!(*p.get((row, 1)), 0.5, "{criterion:?}");
+            }
+
+            // Tree with one split: rows sum to 1, the argmax is the predicted class,
+            // and at least one value is strictly between 0 and 1
+            let tree = DecisionTreeClassifier::fit(
+                &x,
+                &y,
+                DecisionTreeClassifierParameters::default()
+                    .with_criterion(criterion.clone())
+                    .with_max_depth(2)
+                    .with_seed(42),
+            )
+            .unwrap();
+            let p = tree.predict_proba(&x).unwrap();
+            let y_hat = tree.predict(&x).unwrap();
+            let mut has_impure_leaf = false;
+            for (row, &prediction) in y_hat.iter().enumerate() {
+                let (p0, p1) = (*p.get((row, 0)), *p.get((row, 1)));
+                assert!((p0 + p1 - 1.0).abs() < 1e-6, "{criterion:?}, row {row}");
+                let argmax = if p1 > p0 { 1 } else { 0 };
+                assert_eq!(prediction, argmax, "{criterion:?}, row {row}");
+                has_impure_leaf |= p0 > 0.0 && p0 < 1.0;
+            }
+            assert!(has_impure_leaf, "{criterion:?}");
         }
     }
 }
