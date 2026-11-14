@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::ensemble::max_features::MaxFeatures;
 use crate::error::{Failed, FailedError};
-use crate::linalg::basic::arrays::{Array1, Array2};
+use crate::linalg::basic::arrays::{Array1, Array2, ArrayView2};
 use crate::linalg::basic::arrays::{ArrayView1, MutArrayView1};
 use crate::linalg::basic::matrix::DenseMatrix;
 use crate::numbers::basenum::Number;
@@ -358,18 +358,8 @@ where
     X: Array2<TX>,
     Y: Array1<TY>,
 {
-    let (n, _) = x.shape();
-    let mut result = vec![0; n];
-    let mut counts = vec![0usize; num_classes];
-
-    for row in 0..n {
-        counts.fill(0);
-        for tree in forest.trees() {
-            counts[tree.leaf_output_for_row(x, row).class_index] += 1;
-        }
-        result[row] = counts.argmax();
-    }
-    Ok(result)
+    let predicted_probas = predict_proba(forest, x, num_classes)?;
+    Ok(predicted_probas.argmax(1))
 }
 
 /// Mode of the out-of-bag tree predictions for each row of `x`.
