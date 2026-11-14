@@ -60,6 +60,7 @@ pub(crate) trait Criterion {
 pub(crate) trait LeafOutput: Clone + Debug {
     fn approximate_eq(&self, other: &Self) -> bool;
 
+    /// Index of the leaf row in leaf_probabilities. Multiply by the number of classes to find the start of the row.
     fn slot(&self) -> u32;
 }
 
@@ -68,6 +69,7 @@ impl LeafOutput for f64 {
         (self - other).abs() < f64::EPSILON
     }
 
+    // Return zero as regressors do not store leaf probabilities.
     fn slot(&self) -> u32 {
         0
     }
@@ -185,6 +187,21 @@ impl ClassStats {
         out.mass = self.mass - part.mass;
     }
 
+    fn leaf_value(&self, slot: u32, store: &mut Vec<f32>) -> ClassificationOutput {
+        let n = self.class_counts.len();
+        let start = slot as usize * n;
+        debug_assert!(start <= store.len());
+        if start == store.len() {
+            store.resize(start + n, 0.0); // new slot (false child or root): append one row
+        }
+        self.write_distribution(&mut store[start..start + n]);
+
+        ClassificationOutput {
+            class_index: (&store[start..start + n]).argmax(),
+            slot,
+        }
+    }
+
     /// Write the class distribution of these samples to `out`.
     /// `out.len()` must equal the number of classes.
     fn write_distribution(&self, out: &mut [f32]) {
@@ -288,18 +305,7 @@ impl Criterion for GiniCriterion {
     }
 
     fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
-        let n = self.num_classes;
-        let start = slot as usize * n;
-        debug_assert!(start <= store.len());
-        if start == store.len() {
-            store.resize(start + n, 0.0); // new slot (false child or root): append one row
-        }
-        stats.write_distribution(&mut store[start..start + n]);
-
-        ClassificationOutput {
-            class_index: stats.class_counts.argmax(),
-            slot,
-        }
+        stats.leaf_value(slot, store)
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -402,18 +408,7 @@ impl Criterion for EntropyCriterion {
     }
 
     fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
-        let n = self.num_classes;
-        let start = slot as usize * n;
-        debug_assert!(start <= store.len());
-        if start == store.len() {
-            store.resize(start + n, 0.0); // new slot (false child or root): append one row
-        }
-        stats.write_distribution(&mut store[start..start + n]);
-
-        ClassificationOutput {
-            class_index: stats.class_counts.argmax(),
-            slot,
-        }
+        stats.leaf_value(slot, store)
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -485,18 +480,7 @@ impl Criterion for ClassificationErrorCriterion {
     }
 
     fn leaf_value(&self, stats: &Self::Stats, slot: u32, store: &mut Vec<f32>) -> Self::Output {
-        let n = self.num_classes;
-        let start = slot as usize * n;
-        debug_assert!(start <= store.len());
-        if start == store.len() {
-            store.resize(start + n, 0.0); // new slot (false child or root): append one row
-        }
-        stats.write_distribution(&mut store[start..start + n]);
-
-        ClassificationOutput {
-            class_index: stats.class_counts.argmax(),
-            slot,
-        }
+        stats.leaf_value(slot, store)
     }
 
     fn target<T: Number>(&self, y: T) -> Self::Target {
@@ -826,6 +810,7 @@ mod tests {
                 slot: 0
             }
         );
+        assert_eq!(store, vec![1.0 / 3.0; 3]);
         assert_eq!(criterion.proxy_improvement(&empty, &empty), 0.0);
     }
 
@@ -907,15 +892,31 @@ mod tests {
                 slot: 0
             }
         );
+        assert_eq!(store, vec![1.0 / 8.0, 5.0 / 8.0, 2.0 / 8.0]);
 
         // A tie gives the first class, same as `which_max`
         let tie = class_stats(3, &[(0, 3.0), (1, 3.0)]);
         assert_eq!(
-            criterion.leaf_value(&tie, 0, &mut store),
+            criterion.leaf_value(&tie, 1, &mut store),
             ClassificationOutput {
                 class_index: 0,
-                slot: 0
+                slot: 1
             }
+        );
+        assert_eq!(store, vec![1.0 / 8.0, 5.0 / 8.0, 2.0 / 8.0, 0.5, 0.5, 0.0]);
+
+        // storing in an existing slot does not grow the vector
+        criterion.leaf_value(&stats, 1, &mut store);
+        assert_eq!(
+            store,
+            vec![
+                1.0 / 8.0,
+                5.0 / 8.0,
+                2.0 / 8.0,
+                1.0 / 8.0,
+                5.0 / 8.0,
+                2.0 / 8.0
+            ]
         );
     }
 
@@ -1112,6 +1113,7 @@ mod tests {
                 slot: 0
             }
         );
+        assert_eq!(store, vec![1.0 / 8.0, 5.0 / 8.0, 2.0 / 8.0]);
     }
 
     #[test]
@@ -1345,6 +1347,7 @@ mod tests {
                 slot: 0
             }
         );
+        assert_eq!(store, vec![1.0 / 8.0, 5.0 / 8.0, 2.0 / 8.0]);
     }
 
     #[test]
@@ -1462,5 +1465,18 @@ mod tests {
         for offset in &offsets {
             assert!((offset - 3.5).abs() < 1e-9);
         }
+    }
+
+    #[test]
+    fn class_index_agrees_with_stored_distribution() {
+        let criterion = GiniCriterion { num_classes: 2 };
+        let stats = class_stats(2, &[(0, 1.0), (1, 1.0 + 1e-9)]);
+        assert!(stats.class_counts[1] > stats.class_counts[0]); // the f64 counts are not tied
+
+        let mut store = vec![];
+        let output = criterion.leaf_value(&stats, 0, &mut store);
+
+        assert_eq!(store, vec![0.5_f32, 0.5_f32]); // the f32 row is tied
+        assert_eq!(output.class_index, store.argmax());
     }
 }
