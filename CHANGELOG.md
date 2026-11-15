@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Breaking change:** `ensemble`: `m` on `RandomForestClassifierSearchParameters` and `RandomForestRegressorSearchParameters` is now `Vec<MaxFeatures>` (was `Vec<Option<usize>>`). The default grid is `[MaxFeatures::Sqrt]`. Change `vec![None, Some(3)]` to `vec![MaxFeatures::Sqrt, MaxFeatures::Count(3)]`.
 - **Breaking change:** `tree`, `ensemble`: the fitted trees store the number of leaves and, for classification, the class distribution of each leaf. Decision trees, random forests and extra trees serialized with an earlier version cannot be deserialized. Fit these models again.
 - `tree`: `DecisionTreeClassifier::predict_proba` returns the weighted class frequencies of the training samples in the leaf. Before this change, it returned 1 for the predicted class and 0 for the other classes.
- 
+
 ## [0.7.0] - 2026-10-26
 ### Added
 - A `Dependency audit` CI workflow runs `cargo deny` and `cargo audit` on each push and pull request, and every week. It fails when a dependency has a known vulnerability, is yanked, uses a license that is not allowed, or comes from an unknown source. The `deny.toml` file holds the rules.
